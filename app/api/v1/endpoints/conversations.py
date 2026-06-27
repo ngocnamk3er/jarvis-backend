@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
 from app.db import repository
 from app.db.connection import get_pool
@@ -9,12 +9,44 @@ router = APIRouter()
 
 
 def _serialize_messages(messages: list) -> list[dict]:
-    result = []
+    # Build tool_call_id → output map from ToolMessages
+    tool_outputs: dict[str, str] = {
+        msg.tool_call_id: str(msg.content)
+        for msg in messages
+        if isinstance(msg, ToolMessage)
+    }
+
+    result: list[dict] = []
+    pending_parts: list[dict] = []
+
+    def flush():
+        if pending_parts:
+            result.append({"role": "assistant", "parts": list(pending_parts)})
+            pending_parts.clear()
+
     for msg in messages:
         if isinstance(msg, HumanMessage):
-            result.append({"role": "user", "content": str(msg.content)})
-        elif isinstance(msg, AIMessage) and msg.content:
-            result.append({"role": "assistant", "content": str(msg.content)})
+            flush()
+            result.append({
+                "role": "user",
+                "parts": [{"type": "text", "content": str(msg.content)}],
+            })
+
+        elif isinstance(msg, AIMessage):
+            for tc in (msg.tool_calls or []):
+                pending_parts.append({
+                    "type": "tool",
+                    "tool": {
+                        "name": tc["name"],
+                        "input": tc["args"],
+                        "output": tool_outputs.get(tc["id"], ""),
+                        "status": "done",
+                    },
+                })
+            if msg.content:
+                pending_parts.append({"type": "text", "content": str(msg.content)})
+
+    flush()
     return result
 
 

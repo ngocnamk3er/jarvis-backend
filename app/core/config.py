@@ -1,0 +1,19 @@
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    APP_NAME: str = "Jarvis"
+    APP_VERSION: str = "0.1.0"
+    DEBUG: bool = True
+    API_PREFIX: str = "/api/v1"
+
+    OPENROUTER_API_KEY: str = ""
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+    OPENROUTER_MODEL: str = "deepseek/deepseek-r1-0528-qwen3-8b:free"
+
+    class Config:
+        env_file = ".env"
+        case_sensitive = True
+
+
+settings = Settings()

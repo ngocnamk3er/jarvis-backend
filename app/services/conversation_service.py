@@ -5,8 +5,8 @@ from app.core.config import settings
 from app.storage.minio_client import get_minio
 from app.db import repository
 
-
 # ── serialization ─────────────────────────────────────────────────────────────
+
 
 def serialize_messages(messages: list) -> list[dict]:
     tool_outputs: dict[str, str] = {
@@ -26,21 +26,28 @@ def serialize_messages(messages: list) -> list[dict]:
     for msg in messages:
         if isinstance(msg, HumanMessage):
             flush()
-            result.append({
-                "role": "user",
-                "parts": [{"type": "text", "content": str(msg.content)}],
-            })
+            result.append(
+                {
+                    "role": "user",
+                    "parts": [{"type": "text", "content": str(msg.content)}],
+                }
+            )
         elif isinstance(msg, AIMessage):
-            for tc in (msg.tool_calls or []):
-                pending_parts.append({
-                    "type": "tool",
-                    "tool": {
-                        "name": tc["name"],
-                        "input": tc["args"],
-                        "output": tool_outputs.get(tc["id"], ""),
-                        "status": "done",
-                    },
-                })
+            reasoning = msg.additional_kwargs.get("reasoning", "")
+            if reasoning:
+                pending_parts.append({"type": "thinking", "content": reasoning, "isStreaming": False})
+            for tc in msg.tool_calls or []:
+                pending_parts.append(
+                    {
+                        "type": "tool",
+                        "tool": {
+                            "name": tc["name"],
+                            "input": tc["args"],
+                            "output": tool_outputs.get(tc["id"], ""),
+                            "status": "done",
+                        },
+                    }
+                )
             if msg.content:
                 pending_parts.append({"type": "text", "content": str(msg.content)})
 
@@ -50,12 +57,14 @@ def serialize_messages(messages: list) -> list[dict]:
 
 # ── CRUD ──────────────────────────────────────────────────────────────────────
 
+
 async def list_conversations(pool):
     return await repository.list_conversations(pool)
 
 
 async def create_conversation(pool, title: str):
     return await repository.create_conversation(pool, title)
+
 
 async def delete_conversation(pool, graph, conversation_id: str) -> None:
     config = {"configurable": {"thread_id": conversation_id}}
@@ -70,6 +79,7 @@ async def delete_conversation(pool, graph, conversation_id: str) -> None:
             pass
 
     await repository.delete_conversation(pool, conversation_id)
+
 
 async def update_title(pool, conversation_id: str, title: str):
     await repository.update_conversation_title(pool, conversation_id, title)
@@ -87,9 +97,10 @@ async def get_messages(graph, conversation_id: str) -> dict:
 
 # ── delete (with MinIO cleanup) ───────────────────────────────────────────────
 
+
 def _extract_minio_objects(messages: list) -> list[str]:
     pattern = re.compile(
-        r'https?://[^/]+/' + re.escape(settings.MINIO_BUCKET) + r'/([^\s\)\"]+)'
+        r"https?://[^/]+/" + re.escape(settings.MINIO_BUCKET) + r"/([^\s\)\"]+)"
     )
     objects = []
     for msg in messages:
@@ -97,5 +108,3 @@ def _extract_minio_objects(messages: list) -> list[str]:
             for match in pattern.finditer(str(msg.content)):
                 objects.append(match.group(1))
     return objects
-
-

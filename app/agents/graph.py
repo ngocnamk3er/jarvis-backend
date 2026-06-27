@@ -1,11 +1,12 @@
-from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from typing import Annotated
 from typing_extensions import TypedDict
 
-from app.core.config import settings
+from app.agents.llm import build_llm
+from app.agents.prompt import SYSTEM_PROMPT
 from app.agents.tools import tools
 
 
@@ -14,16 +15,11 @@ class AgentState(TypedDict):
 
 
 def build_graph(checkpointer=None):
-    llm = ChatOpenAI(
-        model=settings.OPENROUTER_MODEL,
-        api_key=settings.OPENROUTER_API_KEY,
-        base_url=settings.OPENROUTER_BASE_URL,
-        streaming=True,
-    )
-    llm_with_tools = llm.bind_tools(tools)
+    llm_with_tools = build_llm().bind_tools(tools)
+    system = SystemMessage(content=SYSTEM_PROMPT)
 
     def llm_node(state: AgentState):
-        response = llm_with_tools.invoke(state["messages"])
+        response = llm_with_tools.invoke([system] + state["messages"])
         return {"messages": [response]}
 
     def should_continue(state: AgentState):

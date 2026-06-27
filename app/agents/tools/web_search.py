@@ -7,8 +7,8 @@ from app.agents.tools.messages import WebSearchMsg
 
 @tool
 def web_search(query: str) -> str:
-    """Search the internet for current information, news, or any topic.
-    Use this when you need up-to-date information that may not be in your training data.
+    """Search the internet for current information.
+    Use a single, specific query. Call this tool at most once or twice per user request — stop and answer as soon as you have enough information.
     """
     client = TavilyClient(api_key=settings.TAVILY_API_KEY)
     response = client.search(query=query, max_results=5)

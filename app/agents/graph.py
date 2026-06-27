@@ -13,7 +13,7 @@ class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
 
 
-def _build_graph():
+def build_graph(checkpointer=None):
     llm = ChatOpenAI(
         model=settings.OPENROUTER_MODEL,
         api_key=settings.OPENROUTER_API_KEY,
@@ -37,12 +37,8 @@ def _build_graph():
     graph = StateGraph(AgentState)
     graph.add_node("llm", llm_node)
     graph.add_node("tools", tool_node)
-
     graph.set_entry_point("llm")
     graph.add_conditional_edges("llm", should_continue, {"tools": "tools", END: END})
     graph.add_edge("tools", "llm")
 
-    return graph.compile()
-
-
-agent_graph = _build_graph()
+    return graph.compile(checkpointer=checkpointer)

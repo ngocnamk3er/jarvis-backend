@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
     OPENROUTER_MODEL: str = "deepseek/deepseek-r1-0528-qwen3-8b:free"
 
+    DATABASE_URL: str = "postgresql://jarvis:jarvis@localhost:5432/jarvis"
+
     class Config:
         env_file = ".env"
         case_sensitive = True

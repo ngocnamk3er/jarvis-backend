@@ -1,13 +1,10 @@
 import json
 from abc import ABC, abstractmethod
-from langchain_core.messages import HumanMessage, AIMessage
-
-from app.agents.graph import agent_graph
-from app.schemas.chat import Message
+from langchain_core.messages import HumanMessage
 
 
 # ---------------------------------------------------------------------------
-# Event handlers  (return list[dict] so one event can emit N SSE lines)
+# Event handlers
 # ---------------------------------------------------------------------------
 
 class BaseEventHandler(ABC):
@@ -19,11 +16,9 @@ class TokenEventHandler(BaseEventHandler):
     def handle(self, event: dict) -> list[dict] | None:
         chunk = event["data"]["chunk"]
 
-        # Regular text token
         if chunk.content:
             return [{"type": "token", "content": chunk.content}]
 
-        # Streaming tool-call argument chunks
         tool_chunks = getattr(chunk, "tool_call_chunks", None)
         if not tool_chunks:
             return None
@@ -81,25 +76,16 @@ class EventHandlerFactory:
 # Service
 # ---------------------------------------------------------------------------
 
-_ROLE_MAP = {"user": HumanMessage, "assistant": AIMessage}
-
-
 class ChatService:
     def __init__(self) -> None:
         self._factory = EventHandlerFactory()
 
-    def _to_lc_messages(self, messages: list[Message]) -> list:
-        return [
-            _ROLE_MAP[m.role](content=m.content)
-            for m in messages
-            if m.role in _ROLE_MAP
-        ]
-
-    async def stream(self, messages: list[Message]):
-        lc_messages = self._to_lc_messages(messages)
+    async def stream(self, thread_id: str, content: str, graph):
+        config = {"configurable": {"thread_id": thread_id}}
         try:
-            async for event in agent_graph.astream_events(
-                {"messages": lc_messages},
+            async for event in graph.astream_events(
+                {"messages": [HumanMessage(content=content)]},
+                config=config,
                 version="v2",
             ):
                 handler = self._factory.get_handler(event["event"])

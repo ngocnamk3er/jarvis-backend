@@ -18,16 +18,6 @@ async def init_db() -> AsyncPostgresSaver:
     checkpointer = AsyncPostgresSaver(pool)
     await checkpointer.setup()
 
-    async with pool.connection() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS conversations (
-                id          TEXT        PRIMARY KEY,
-                title       TEXT        NOT NULL DEFAULT 'New conversation',
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-        """)
-
     return checkpointer
 
 

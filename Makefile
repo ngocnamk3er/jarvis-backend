@@ -3,7 +3,7 @@ PYTHON := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 UVICORN := $(VENV)/bin/uvicorn
 
-.PHONY: install run dev shell build-sandbox
+.PHONY: install run dev shell build-sandbox migrate migration
 
 install:
 	python3 -m venv $(VENV)
@@ -20,3 +20,9 @@ shell:
 
 build-sandbox:
 	docker build -f Dockerfile.sandbox -t jarvis-sandbox .
+
+migrate:
+	$(VENV)/bin/alembic upgrade head
+
+migration:
+	$(VENV)/bin/alembic revision --autogenerate -m "$(name)"

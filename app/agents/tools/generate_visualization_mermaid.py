@@ -4,11 +4,11 @@ from langchain_core.tools import tool
 
 @tool
 def generate_visualization_mermaid(code: str, title: str = "") -> str:
-    """Render a Mermaid diagram to visually explain something to the user.
+    """Render a Mermaid diagram when the user needs a flow-based visual.
 
-    Use this whenever a visual would help — flowcharts, sequence diagrams,
-    class diagrams, state machines, pie charts, mindmaps, timelines, etc.
-    Write valid Mermaid syntax in `code`. Keep diagrams focused and readable.
+    Use this for anything flow-related: flowcharts, sequence diagrams, state
+    machines, class diagrams, mindmaps, timelines, entity relationships, etc.
+    Write valid Mermaid syntax in `code`.
 
     Args:
         code: Valid Mermaid diagram syntax (e.g. "flowchart TD\\n  A --> B")

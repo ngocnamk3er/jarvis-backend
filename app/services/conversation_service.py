@@ -36,6 +36,8 @@ def serialize_messages(messages: list) -> list[dict]:
             reasoning = msg.additional_kwargs.get("reasoning", "")
             if reasoning:
                 pending_parts.append({"type": "thinking", "content": reasoning, "isStreaming": False})
+            if msg.content:
+                pending_parts.append({"type": "text", "content": str(msg.content)})
             for tc in msg.tool_calls or []:
                 raw_output = tool_outputs.get(tc["id"], "")
                 try:
@@ -57,8 +59,6 @@ def serialize_messages(messages: list) -> list[dict]:
                         },
                     }
                 )
-            if msg.content:
-                pending_parts.append({"type": "text", "content": str(msg.content)})
 
     flush()
     return result

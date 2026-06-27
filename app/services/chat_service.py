@@ -25,12 +25,13 @@ class TokenEventHandler(BaseEventHandler):
 
         events = []
         for tc in tool_chunks:
-            args_delta = tc.get("args", "")
-            if args_delta:
+            args_delta = tc.get("args", "") or ""
+            name = tc.get("name") or ""
+            if name or args_delta:
                 events.append({
                     "type": "tool_chunk",
                     "index": tc.get("index", 0),
-                    "name": tc.get("name") or "",
+                    "name": name,
                     "args_delta": args_delta,
                 })
         return events or None

@@ -68,7 +68,10 @@ async def get_messages(conversation_id: str, req: Request):
     config = {"configurable": {"thread_id": conversation_id}}
     state = await graph.aget_state(config)
     messages = state.values.get("messages", []) if state.values else []
-    return _serialize_messages(messages)
+    return {
+        "messages": _serialize_messages(messages),
+        "is_pending": bool(state.next),
+    }
 
 
 @router.patch("/{conversation_id}/title")

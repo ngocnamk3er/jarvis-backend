@@ -43,12 +43,4 @@ def build_llm() -> ThinkingChatOpenAI:
         api_key=settings.OPENROUTER_API_KEY,
         base_url=settings.OPENROUTER_BASE_URL,
         streaming=True,
-        model_kwargs={
-            "extra_body": {
-                "reasoning": {
-                    "effort": "high",
-                    "exclude": False,
-                }
-            }
-        },
     )

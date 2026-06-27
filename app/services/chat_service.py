@@ -134,8 +134,11 @@ class ChatService:
 
         return events
 
-    async def stream(self, thread_id: str, content: str, graph):
-        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
+    async def stream(self, thread_id: str, content: str, graph, thinking_effort: str = "high"):
+        config = {
+            "configurable": {"thread_id": thread_id, "thinking_effort": thinking_effort},
+            "recursion_limit": 50,
+        }
         parser = ThinkingParser()
         try:
             async for event in graph.astream_events(

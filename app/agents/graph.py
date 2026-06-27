@@ -1,4 +1,5 @@
 from langchain_core.messages import SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -18,8 +19,12 @@ def build_graph(checkpointer=None):
     llm_with_tools = build_llm().bind_tools(tools)
     system = SystemMessage(content=SYSTEM_PROMPT)
 
-    def llm_node(state: AgentState):
-        response = llm_with_tools.invoke([system] + state["messages"])
+    def llm_node(state: AgentState, config: RunnableConfig):
+        effort = config.get("configurable", {}).get("thinking_effort", "high")
+        response = llm_with_tools.invoke(
+            [system] + state["messages"],
+            extra_body={"reasoning": {"effort": effort, "exclude": False}},
+        )
         return {"messages": [response]}
 
     def should_continue(state: AgentState):

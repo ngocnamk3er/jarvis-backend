@@ -1,6 +1,6 @@
 from langchain_core.tools import tool
 
-from app.agents.tools.messages import CalculatorMsg
+from app.agents.messages import CalculatorMsg
 
 
 @tool

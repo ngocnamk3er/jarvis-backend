@@ -1,7 +1,7 @@
 import subprocess
 from langchain_core.tools import tool
 
-from app.agents.tools.messages import RunPythonMsg
+from app.agents.messages import RunPythonMsg
 
 _DOCKER_IMAGE = "python:3.12-slim"
 _TIMEOUT_SECONDS = 15

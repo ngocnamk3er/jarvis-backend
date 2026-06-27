@@ -2,7 +2,7 @@ from langchain_core.tools import tool
 from tavily import TavilyClient
 
 from app.core.config import settings
-from app.agents.tools.messages import WebSearchMsg
+from app.agents.messages import WebSearchMsg
 
 
 @tool

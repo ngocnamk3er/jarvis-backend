@@ -37,13 +37,22 @@ def serialize_messages(messages: list) -> list[dict]:
             if reasoning:
                 pending_parts.append({"type": "thinking", "content": reasoning, "isStreaming": False})
             for tc in msg.tool_calls or []:
+                raw_output = tool_outputs.get(tc["id"], "")
+                try:
+                    import json as _json
+                    data = _json.loads(raw_output)
+                    if "__viz__" in data:
+                        pending_parts.append({"type": "viz", "format": data["__viz__"], "code": data["code"], "title": data.get("title", "")})
+                        continue
+                except Exception:
+                    pass
                 pending_parts.append(
                     {
                         "type": "tool",
                         "tool": {
                             "name": tc["name"],
                             "input": tc["args"],
-                            "output": tool_outputs.get(tc["id"], ""),
+                            "output": raw_output,
                             "status": "done",
                         },
                     }

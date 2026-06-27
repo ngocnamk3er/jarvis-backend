@@ -7,7 +7,7 @@ from uuid import uuid4
 from langchain_core.tools import tool
 
 from app.core.config import settings
-from app.agents.tools.messages import CreateFileMsg
+from app.agents.messages import CreateFileMsg
 from app.storage.minio_client import get_minio
 
 _DOCKER_IMAGE = "jarvis-sandbox"

@@ -69,28 +69,27 @@ class ThinkingParser:
 # ---------------------------------------------------------------------------
 
 
+VIZ_TOOLS = {"generate_visualization_mermaid", "generate_visualization_svg"}
+
+
 class ToolStartEventHandler:
     def handle(self, event: dict) -> list[dict]:
-        return [
-            {
-                "type": "tool_start",
-                "name": event["name"],
-                "input": event["data"].get("input"),
-            }
-        ]
+        if event["name"] in VIZ_TOOLS:
+            return []
+        return [{"type": "tool_start", "name": event["name"], "input": event["data"].get("input")}]
 
 
 class ToolEndEventHandler:
     def handle(self, event: dict) -> list[dict]:
         raw = event["data"].get("output")
         output = raw.content if hasattr(raw, "content") else str(raw)
-        return [
-            {
-                "type": "tool_end",
-                "name": event["name"],
-                "output": output,
-            }
-        ]
+        try:
+            data = json.loads(output)
+            if "__viz__" in data:
+                return [{"type": "viz", "format": data["__viz__"], "code": data["code"], "title": data.get("title", "")}]
+        except Exception:
+            pass
+        return [{"type": "tool_end", "name": event["name"], "output": output}]
 
 
 # ---------------------------------------------------------------------------

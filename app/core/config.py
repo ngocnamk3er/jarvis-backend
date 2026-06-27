@@ -13,6 +13,9 @@ class Settings(BaseSettings):
 
     TAVILY_API_KEY: str = ""
 
+    FILES_DIR: str = "/tmp/jarvis-files"
+    APP_BASE_URL: str = "http://localhost:8000"
+
     DATABASE_URL: str = "postgresql://jarvis:jarvis@localhost:5433/jarvis"
 
     class Config:

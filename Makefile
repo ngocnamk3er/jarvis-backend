@@ -3,7 +3,7 @@ PYTHON := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 UVICORN := $(VENV)/bin/uvicorn
 
-.PHONY: install run dev shell
+.PHONY: install run dev shell build-sandbox
 
 install:
 	python3 -m venv $(VENV)
@@ -17,3 +17,6 @@ dev:
 
 shell:
 	$(PYTHON)
+
+build-sandbox:
+	docker build -f Dockerfile.sandbox -t jarvis-sandbox .

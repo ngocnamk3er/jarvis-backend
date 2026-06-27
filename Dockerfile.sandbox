@@ -1,0 +1,9 @@
+FROM python:3.11-slim
+RUN pip install --no-cache-dir \
+    python-docx \
+    reportlab \
+    Pillow \
+    svgwrite \
+    openpyxl \
+    fpdf2 \
+    matplotlib

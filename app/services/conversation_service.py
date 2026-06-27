@@ -57,6 +57,19 @@ async def list_conversations(pool):
 async def create_conversation(pool, title: str):
     return await repository.create_conversation(pool, title)
 
+async def delete_conversation(pool, graph, conversation_id: str) -> None:
+    config = {"configurable": {"thread_id": conversation_id}}
+    state = await graph.aget_state(config)
+    messages = state.values.get("messages", []) if state.values else []
+
+    minio = get_minio()
+    for obj in _extract_minio_objects(messages):
+        try:
+            minio.remove_object(settings.MINIO_BUCKET, obj)
+        except Exception:
+            pass
+
+    await repository.delete_conversation(pool, conversation_id)
 
 async def update_title(pool, conversation_id: str, title: str):
     await repository.update_conversation_title(pool, conversation_id, title)
@@ -86,16 +99,3 @@ def _extract_minio_objects(messages: list) -> list[str]:
     return objects
 
 
-async def delete_conversation(pool, graph, conversation_id: str) -> None:
-    config = {"configurable": {"thread_id": conversation_id}}
-    state = await graph.aget_state(config)
-    messages = state.values.get("messages", []) if state.values else []
-
-    minio = get_minio()
-    for obj in _extract_minio_objects(messages):
-        try:
-            minio.remove_object(settings.MINIO_BUCKET, obj)
-        except Exception:
-            pass
-
-    await repository.delete_conversation(pool, conversation_id)

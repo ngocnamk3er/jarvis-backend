@@ -82,7 +82,7 @@ class ChatService:
         self._factory = EventHandlerFactory()
 
     async def stream(self, thread_id: str, content: str, graph):
-        config = {"configurable": {"thread_id": thread_id}}
+        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
         try:
             async for event in graph.astream_events(
                 {"messages": [HumanMessage(content=content)]},

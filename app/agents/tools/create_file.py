@@ -1,4 +1,6 @@
+import mimetypes
 import subprocess
+import tempfile
 from pathlib import Path
 from uuid import uuid4
 
@@ -6,6 +8,7 @@ from langchain_core.tools import tool
 
 from app.core.config import settings
 from app.agents.tools.messages import CreateFileMsg
+from app.storage.minio_client import get_minio
 
 _DOCKER_IMAGE = "jarvis-sandbox"
 _TIMEOUT_SECONDS = 30
@@ -37,43 +40,54 @@ def create_file(filename: str, code: str) -> str:
         dwg = svgwrite.Drawing(os.environ['OUTPUT_PATH'], size=('200px','200px'))
         dwg.add(dwg.circle((100,100), 50, fill='blue')); dwg.save()
     """
-    files_dir = Path(settings.FILES_DIR)
-    files_dir.mkdir(parents=True, exist_ok=True)
-
     safe_name = "".join(c for c in filename if c.isalnum() or c in "._-")[:100] or "file"
-    output_filename = f"{uuid4().hex[:8]}_{safe_name}"
-    container_output = f"/output/{output_filename}"
+    object_name = f"{uuid4().hex[:8]}_{safe_name}"
 
-    try:
-        result = subprocess.run(
-            [
-                "docker", "run", "--rm",
-                "--network", "none",
-                "--memory", "256m",
-                "--cpus", "0.5",
-                "--security-opt", "no-new-privileges:true",
-                "--tmpfs", "/tmp:size=64m",
-                "-v", f"{files_dir.resolve()}:/output",
-                "-e", f"OUTPUT_PATH={container_output}",
-                "-i",
-                _DOCKER_IMAGE,
-                "python", "-",
-            ],
-            input=code,
-            capture_output=True,
-            text=True,
-            timeout=_TIMEOUT_SECONDS,
-        )
-    except FileNotFoundError:
-        return CreateFileMsg.DOCKER_NOT_AVAILABLE
-    except subprocess.TimeoutExpired:
-        return CreateFileMsg.TIMEOUT.format(timeout=_TIMEOUT_SECONDS)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        local_path = Path(tmp_dir) / object_name
+        container_output = f"/output/{object_name}"
 
-    if result.returncode != 0:
-        return CreateFileMsg.EXEC_ERROR.format(stderr=result.stderr.strip())
+        try:
+            result = subprocess.run(
+                [
+                    "docker", "run", "--rm",
+                    "--network", "none",
+                    "--memory", "256m",
+                    "--cpus", "0.5",
+                    "--security-opt", "no-new-privileges:true",
+                    "--tmpfs", "/tmp:size=64m",
+                    "-v", f"{tmp_dir}:/output",
+                    "-e", f"OUTPUT_PATH={container_output}",
+                    "-i",
+                    _DOCKER_IMAGE,
+                    "python", "-",
+                ],
+                input=code,
+                capture_output=True,
+                text=True,
+                timeout=_TIMEOUT_SECONDS,
+            )
+        except FileNotFoundError:
+            return CreateFileMsg.DOCKER_NOT_AVAILABLE
+        except subprocess.TimeoutExpired:
+            return CreateFileMsg.TIMEOUT.format(timeout=_TIMEOUT_SECONDS)
 
-    if not (files_dir / output_filename).exists():
-        return CreateFileMsg.FILE_NOT_CREATED
+        if result.returncode != 0:
+            return CreateFileMsg.EXEC_ERROR.format(stderr=result.stderr.strip())
 
-    url = f"{settings.APP_BASE_URL}{settings.API_PREFIX}/files/{output_filename}"
+        if not local_path.exists():
+            return CreateFileMsg.FILE_NOT_CREATED
+
+        mime_type, _ = mimetypes.guess_type(safe_name)
+        try:
+            get_minio().fput_object(
+                settings.MINIO_BUCKET,
+                object_name,
+                str(local_path),
+                content_type=mime_type or "application/octet-stream",
+            )
+        except Exception as e:
+            return CreateFileMsg.UPLOAD_ERROR.format(error=str(e))
+
+    url = f"{settings.MINIO_PUBLIC_URL}/{settings.MINIO_BUCKET}/{object_name}"
     return CreateFileMsg.SUCCESS.format(filename=safe_name, url=url)

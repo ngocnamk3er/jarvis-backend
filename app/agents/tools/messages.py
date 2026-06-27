@@ -19,4 +19,5 @@ class CreateFileMsg:
     TIMEOUT = "Error: execution timed out ({timeout}s limit)."
     EXEC_ERROR = "Error:\n{stderr}"
     FILE_NOT_CREATED = "Error: code ran but no file was written to OUTPUT_PATH."
+    UPLOAD_ERROR = "Error uploading to storage: {error}"
     SUCCESS = "✓ **{filename}** created.\n\n[⬇ Download {filename}]({url})"

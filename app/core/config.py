@@ -13,8 +13,12 @@ class Settings(BaseSettings):
 
     TAVILY_API_KEY: str = ""
 
-    FILES_DIR: str = "/tmp/jarvis-files"
-    APP_BASE_URL: str = "http://localhost:8000"
+    MINIO_ENDPOINT: str = "localhost:9000"
+    MINIO_ACCESS_KEY: str = "jarvis"
+    MINIO_SECRET_KEY: str = "jarvis123"
+    MINIO_BUCKET: str = "jarvis-files"
+    MINIO_SECURE: bool = False
+    MINIO_PUBLIC_URL: str = "http://localhost:9000"
 
     DATABASE_URL: str = "postgresql://jarvis:jarvis@localhost:5433/jarvis"
 

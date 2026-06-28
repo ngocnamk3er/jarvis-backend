@@ -69,7 +69,7 @@ class ThinkingParser:
 # ---------------------------------------------------------------------------
 
 
-VIZ_TOOLS = {"generate_visualization_mermaid", "generate_visualization_svg"}
+VIZ_TOOLS = {"generate_visualization_mermaid", "generate_visualization_svg", "generate_animation"}
 
 
 class ToolStartEventHandler:
@@ -102,7 +102,7 @@ class ChatService:
         self._tool_start = ToolStartEventHandler()
         self._tool_end = ToolEndEventHandler()
 
-    def _handle_token(self, event: dict, parser: ThinkingParser) -> list[dict]:
+    def _handle_token(self, event: dict, parser: ThinkingParser, viz_indexes: set[int]) -> list[dict]:
         chunk = event["data"]["chunk"]
         events: list[dict] = []
 
@@ -117,15 +117,20 @@ class ChatService:
         if chunk.content:
             events.extend(parser.feed(chunk.content))
 
-        # Tool call chunks
+        # Tool call chunks — suppress for viz tools (they render as viz blocks, not badges)
         for tc in getattr(chunk, "tool_call_chunks", None) or []:
             name = tc.get("name") or ""
+            index = tc.get("index", 0)
             args_delta = tc.get("args", "") or ""
+            if name and name in VIZ_TOOLS:
+                viz_indexes.add(index)
+            if index in viz_indexes:
+                continue
             if name or args_delta:
                 events.append(
                     {
                         "type": "tool_chunk",
-                        "index": tc.get("index", 0),
+                        "index": index,
                         "name": name,
                         "args_delta": args_delta,
                     }
@@ -133,12 +138,13 @@ class ChatService:
 
         return events
 
-    async def stream(self, thread_id: str, content: str, graph, thinking_effort: str = "high"):
+    async def stream(self, thread_id: str, content: str, graph, thinking_effort: str = "high", model: str | None = None):
         config = {
-            "configurable": {"thread_id": thread_id, "thinking_effort": thinking_effort},
+            "configurable": {"thread_id": thread_id, "thinking_effort": thinking_effort, "model": model},
             "recursion_limit": 50,
         }
         parser = ThinkingParser()
+        viz_indexes: set[int] = set()
         try:
             async for event in graph.astream_events(
                 {"messages": [HumanMessage(content=content)]},
@@ -148,7 +154,7 @@ class ChatService:
                 results: list[dict] | None = None
 
                 if event["event"] == "on_chat_model_stream":
-                    results = self._handle_token(event, parser) or None
+                    results = self._handle_token(event, parser, viz_indexes) or None
                 elif event["event"] == "on_tool_start":
                     results = self._tool_start.handle(event)
                 elif event["event"] == "on_tool_end":

@@ -37,9 +37,9 @@ class ThinkingChatOpenAI(ChatOpenAI):
         return gen_chunk
 
 
-def build_llm() -> ThinkingChatOpenAI:
+def build_llm(model: str | None = None) -> ThinkingChatOpenAI:
     return ThinkingChatOpenAI(
-        model=settings.OPENROUTER_MODEL,
+        model=model or settings.OPENROUTER_MODEL,
         api_key=settings.OPENROUTER_API_KEY,
         base_url=settings.OPENROUTER_BASE_URL,
         streaming=True,

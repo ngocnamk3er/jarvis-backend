@@ -16,11 +16,13 @@ class AgentState(TypedDict):
 
 
 def build_graph(checkpointer=None):
-    llm_with_tools = build_llm().bind_tools(tools)
     system = SystemMessage(content=SYSTEM_PROMPT)
 
     def llm_node(state: AgentState, config: RunnableConfig):
-        effort = config.get("configurable", {}).get("thinking_effort", "high")
+        cfg = config.get("configurable", {})
+        effort = cfg.get("thinking_effort", "high")
+        model = cfg.get("model", None)
+        llm_with_tools = build_llm(model).bind_tools(tools)
         response = llm_with_tools.invoke(
             [system] + state["messages"],
             extra_body={"reasoning": {"effort": effort, "exclude": False}},

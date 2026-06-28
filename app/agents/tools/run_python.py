@@ -3,38 +3,41 @@ from langchain_core.tools import tool
 
 from app.agents.messages import RunPythonMsg
 
-_DOCKER_IMAGE = "python:3.12-slim"
-_TIMEOUT_SECONDS = 15
+_DOCKER_IMAGE = "jarvis-sandbox"
+_PIP_CACHE_VOLUME = "jarvis-pip-cache"
 
 
 @tool
 def run_python(code: str) -> str:
-    """Execute Python code in an isolated Docker container and return the output.
-    The container has no network access, 128 MB memory limit, and a 15-second timeout.
+    """Execute Python code in an isolated Docker container and return stdout.
+
+    Each call starts fresh — no state is shared between calls.
+    Use print() to produce output.
+
+    Args:
+        code: Python code to execute.
     """
     try:
         result = subprocess.run(
             [
                 "docker", "run", "--rm",
-                "--network", "none",
-                "--memory", "128m",
-                "--cpus", "0.5",
+                "--memory", "512m",
+                "--cpus", "1.0",
                 "--security-opt", "no-new-privileges:true",
-                "--read-only",
-                "--tmpfs", "/tmp:size=32m",
-                "-i",
-                _DOCKER_IMAGE,
+                "--tmpfs", "/tmp:size=512m,exec",
+                "-v", f"{_PIP_CACHE_VOLUME}:/root/.cache/pip",
+                "-i", _DOCKER_IMAGE,
                 "python", "-",
             ],
             input=code,
             capture_output=True,
             text=True,
-            timeout=_TIMEOUT_SECONDS,
+            timeout=300,
         )
     except FileNotFoundError:
         return RunPythonMsg.DOCKER_NOT_AVAILABLE
     except subprocess.TimeoutExpired:
-        return RunPythonMsg.TIMEOUT.format(timeout=_TIMEOUT_SECONDS)
+        return RunPythonMsg.TIMEOUT.format(timeout=300)
 
     if result.returncode != 0:
         return RunPythonMsg.EXEC_ERROR.format(stderr=result.stderr.strip())

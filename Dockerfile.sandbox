@@ -1,11 +1,1 @@
 FROM python:3.11-slim
-
-RUN pip install --no-cache-dir \
-    # data science
-    numpy pandas scipy scikit-learn \
-    # visualization
-    matplotlib seaborn pillow \
-    # files
-    python-docx reportlab fpdf2 openpyxl svgwrite \
-    # utils
-    requests

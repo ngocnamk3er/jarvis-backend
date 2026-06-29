@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
 
 
@@ -21,6 +23,8 @@ class Settings(BaseSettings):
     MINIO_PUBLIC_URL: str = "http://localhost:9000"
 
     DATABASE_URL: str = "postgresql://jarvis:jarvis@localhost:5433/jarvis"
+
+    SANDBOX_DATA_DIR: str = str(Path(__file__).parent.parent.parent / "data" / "sandboxes")
 
     class Config:
         env_file = ".env"

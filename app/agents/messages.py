@@ -18,6 +18,6 @@ class CreateFileMsg:
     DOCKER_NOT_AVAILABLE = "Error: Docker is not available on this system."
     TIMEOUT = "Error: execution timed out ({timeout}s limit)."
     EXEC_ERROR = "Error:\n{stderr}"
-    FILE_NOT_CREATED = "Error: code ran but no file was written to OUTPUT_PATH."
+    FILE_NOT_CREATED = "Error: code ran but '{filename}' was not found in /output. Make sure your code saves the file to /output/{filename}."
     UPLOAD_ERROR = "Error uploading to storage: {error}"
     SUCCESS = "✓ **{filename}** created.\n\n[⬇ Download {filename}]({url})"

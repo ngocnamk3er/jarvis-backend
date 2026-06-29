@@ -1,7 +1,5 @@
-import mimetypes
 import subprocess
 from pathlib import Path
-from uuid import uuid4
 
 from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
@@ -13,7 +11,6 @@ from app.agents.tools.sandbox_manager import (
     exec_in_sandbox,
     mask_real_paths,
 )
-from app.storage.minio_client import get_minio
 
 
 @tool
@@ -29,6 +26,8 @@ def create_file(filename: str, code: str, config: RunnableConfig) -> str:
         fig.savefig("/output/chart.png")
         df.to_excel("/output/report.xlsx", index=False)
         with open("/output/report.pdf", "wb") as f: f.write(data)
+
+    After the file is created, call represent_file("/output/<filename>") to show it to the user.
 
     Args:
         filename: Output filename with extension (e.g. "report.pdf", "chart.png")
@@ -64,17 +63,4 @@ def create_file(filename: str, code: str, config: RunnableConfig) -> str:
             msg += f" Files currently in /output: {', '.join(existing)}"
         return msg + stderr_hint
 
-    object_name = f"{uuid4().hex[:8]}_{safe_name}"
-    mime_type, _ = mimetypes.guess_type(safe_name)
-    try:
-        get_minio().fput_object(
-            settings.MINIO_BUCKET,
-            object_name,
-            str(output_host_path),
-            content_type=mime_type or "application/octet-stream",
-        )
-    except Exception as e:
-        return CreateFileMsg.UPLOAD_ERROR.format(error=str(e))
-
-    url = f"{settings.MINIO_PUBLIC_URL}/{settings.MINIO_BUCKET}/{object_name}"
-    return CreateFileMsg.SUCCESS.format(filename=safe_name, url=url)
+    return CreateFileMsg.SUCCESS.format(filename=safe_name) + stderr_hint

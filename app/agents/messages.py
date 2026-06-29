@@ -19,5 +19,4 @@ class CreateFileMsg:
     TIMEOUT = "Error: execution timed out ({timeout}s limit)."
     EXEC_ERROR = "Error:\n{stderr}"
     FILE_NOT_CREATED = "Error: code ran but '{filename}' was not found in /output. Make sure your code saves the file to /output/{filename}."
-    UPLOAD_ERROR = "Error uploading to storage: {error}"
-    SUCCESS = "✓ **{filename}** created.\n\n[⬇ Download {filename}]({url})"
+    SUCCESS = "✓ {filename} saved to /output/{filename}. Call represent_file(\"/output/{filename}\") to show it to the user."

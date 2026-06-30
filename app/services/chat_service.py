@@ -69,7 +69,7 @@ class ThinkingParser:
 # ---------------------------------------------------------------------------
 
 
-VIZ_TOOLS = {"generate_visualization_mermaid", "generate_visualization_svg", "generate_animation"}
+VIZ_TOOLS = {"generate_visualization_mermaid", "generate_visualization_svg", "generate_animation", "generate_webapp"}
 
 
 class ToolStartEventHandler:

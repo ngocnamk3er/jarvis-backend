@@ -1,6 +1,28 @@
 FROM python:3.11-slim
 
+# System dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        fonts-dejavu-core \
-        fonts-liberation \
+        gcc g++ \
+        fonts-dejavu-core fonts-liberation \
+        curl wget git jq \
+        libxml2-dev libxslt-dev libjpeg-dev libpng-dev \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# General Python libraries
+RUN pip install --no-cache-dir \
+    numpy pandas scipy statsmodels \
+    matplotlib seaborn plotly kaleido \
+    scikit-learn xgboost lightgbm \
+    nltk \
+    requests httpx beautifulsoup4 lxml \
+    openpyxl xlrd python-docx reportlab fpdf2 pillow svgwrite \
+    yfinance \
+    tqdm rich tabulate pyyaml toml python-dateutil pytz regex
+
+# PyTorch (CPU) — separate index
+RUN pip install --no-cache-dir \
+    torch torchvision torchaudio \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# TensorFlow (CPU)
+RUN pip install --no-cache-dir tensorflow-cpu

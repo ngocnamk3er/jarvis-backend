@@ -16,13 +16,28 @@ VIRTUAL_UPLOAD = "/upload"
 
 # Match virtual paths only when they appear as a root path expression
 # (preceded by quote, whitespace, (, =, [, comma) to avoid replacing subpaths like /workspace/output
-_VIRTUAL_PATH_RE = re.compile(
-    r'(?:^|(?<=["\'\s(=,\[]))(/workspace|/output|/upload)\b'
-)
+_VIRTUAL_PATH_RE = re.compile(r'(?:^|(?<=["\'\s(=,\[]))(/workspace|/output|/upload)\b')
 
 
 def _real_base(conversation_id: str) -> str:
     return f"{_SANDBOX_MOUNT}/{conversation_id}"
+
+
+def get_thread_id(config) -> str:
+    return config.get("configurable", {}).get("thread_id", "default")
+
+
+def resolve_virtual_path(virtual_path: str, thread_id: str) -> Path:
+    """Translate a virtual path (/workspace, /output, /upload) to a real host path."""
+    base = Path(settings.SANDBOX_DATA_DIR) / thread_id
+    vp = virtual_path.strip()
+    if vp.startswith(VIRTUAL_WORKSPACE):
+        return base / "workspace" / vp[len(VIRTUAL_WORKSPACE) :].lstrip("/")
+    if vp.startswith(VIRTUAL_OUTPUT):
+        return base / "output" / vp[len(VIRTUAL_OUTPUT) :].lstrip("/")
+    if vp.startswith(VIRTUAL_UPLOAD):
+        return base / "upload" / vp[len(VIRTUAL_UPLOAD) :].lstrip("/")
+    return base / "workspace" / vp.lstrip("/")
 
 
 def replace_virtual_paths(code: str, conversation_id: str) -> str:
@@ -68,16 +83,26 @@ def ensure_container_running() -> str:
     try:
         subprocess.run(
             [
-                "docker", "run", "-d",
-                "--name", _CONTAINER_NAME,
-                "--memory", "512m",
-                "--cpus", "1.0",
-                "--security-opt", "no-new-privileges:true",
-                "--tmpfs", "/tmp:size=4g,exec",
-                "-v", f"{_PIP_CACHE_VOLUME}:/root/.cache/pip",
-                "-v", f"{settings.SANDBOX_DATA_DIR}:{_SANDBOX_MOUNT}",
+                "docker",
+                "run",
+                "-d",
+                "--name",
+                _CONTAINER_NAME,
+                "--memory",
+                "512m",
+                "--cpus",
+                "1.0",
+                "--security-opt",
+                "no-new-privileges:true",
+                "--tmpfs",
+                "/tmp:size=4g,exec",
+                "-v",
+                f"{_PIP_CACHE_VOLUME}:/root/.cache/pip",
+                "-v",
+                f"{settings.SANDBOX_DATA_DIR}:{_SANDBOX_MOUNT}",
                 _DOCKER_IMAGE,
-                "sleep", "infinity",
+                "sleep",
+                "infinity",
             ],
             check=True,
             capture_output=True,
@@ -94,7 +119,42 @@ def ensure_container_running() -> str:
     return _CONTAINER_NAME
 
 
-def exec_in_sandbox(conversation_id: str, code: str, timeout: int = 300) -> subprocess.CompletedProcess:
+def exec_bash_in_sandbox(
+    conversation_id: str, command: str, timeout: int = 60
+) -> subprocess.CompletedProcess:
+    """Execute a bash command in the sandbox with virtual path mapping."""
+    _prepare_host_dirs(conversation_id)
+    real_command = replace_virtual_paths(command, conversation_id)
+    base = _real_base(conversation_id)
+    workspace_dir = f"{base}/workspace"
+
+    # Inject env vars so Python scripts can resolve virtual paths at runtime
+    env_prefix = (
+        f"export WORKSPACE={base}/workspace "
+        f"OUTPUT={base}/output "
+        f"UPLOAD={base}/upload && "
+    )
+
+    return subprocess.run(
+        [
+            "docker",
+            "exec",
+            "-w",
+            workspace_dir,
+            _CONTAINER_NAME,
+            "bash",
+            "-c",
+            env_prefix + real_command,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def exec_in_sandbox(
+    conversation_id: str, code: str, timeout: int = 300
+) -> subprocess.CompletedProcess:
     """Execute code in the shared sandbox container with virtual path mapping.
 
     The agent writes /output, /workspace, /upload — we replace them with the real
@@ -106,10 +166,14 @@ def exec_in_sandbox(conversation_id: str, code: str, timeout: int = 300) -> subp
 
     return subprocess.run(
         [
-            "docker", "exec",
-            "-w", workspace_dir,
-            "-i", _CONTAINER_NAME,
-            "python", "-",
+            "docker",
+            "exec",
+            "-w",
+            workspace_dir,
+            "-i",
+            _CONTAINER_NAME,
+            "python",
+            "-",
         ],
         input=real_code,
         capture_output=True,

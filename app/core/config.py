@@ -15,14 +15,9 @@ class Settings(BaseSettings):
 
     TAVILY_API_KEY: str = ""
 
-    MINIO_ENDPOINT: str = "localhost:9000"
-    MINIO_ACCESS_KEY: str = "jarvis"
-    MINIO_SECRET_KEY: str = "jarvis123"
-    MINIO_BUCKET: str = "jarvis-files"
-    MINIO_SECURE: bool = False
-    MINIO_PUBLIC_URL: str = "http://localhost:9000"
-
     DATABASE_URL: str = "postgresql://jarvis:jarvis@localhost:5433/jarvis"
+
+    BACKEND_URL: str = "http://localhost:8000"
 
     SANDBOX_DATA_DIR: str = str(Path(__file__).parent.parent.parent / "data" / "sandboxes")
 

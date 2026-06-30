@@ -1,10 +1,3 @@
-class RunPythonMsg:
-    DOCKER_NOT_AVAILABLE = "Error: Docker is not available on this system."
-    TIMEOUT = "Error: execution timed out ({timeout}s limit)."
-    EXEC_ERROR = "Error:\n{stderr}"
-    NO_OUTPUT = "(no output)"
-
-
 class CalculatorMsg:
     INVALID_CHARS = "Error: only basic arithmetic operators are allowed."
     EVAL_ERROR = "Error: {error}"
@@ -12,11 +5,3 @@ class CalculatorMsg:
 
 class WebSearchMsg:
     NO_RESULTS = "No results found."
-
-
-class CreateFileMsg:
-    DOCKER_NOT_AVAILABLE = "Error: Docker is not available on this system."
-    TIMEOUT = "Error: execution timed out ({timeout}s limit)."
-    EXEC_ERROR = "Error:\n{stderr}"
-    FILE_NOT_CREATED = "Error: code ran but '{filename}' was not found in /output. Make sure your code saves the file to /output/{filename}."
-    SUCCESS = "✓ {filename} saved to /output/{filename}. Call represent_file(\"/output/{filename}\") to show it to the user."

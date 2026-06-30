@@ -6,14 +6,12 @@ from app.core.config import settings
 from app.api.v1.router import router as api_v1_router
 from app.db.connection import init_db, close_db
 from app.agents.graph import build_graph
-from app.storage.minio_client import init_minio
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     checkpointer = await init_db()
     app.state.graph = build_graph(checkpointer=checkpointer)
-    init_minio()
     yield
     await close_db()
 

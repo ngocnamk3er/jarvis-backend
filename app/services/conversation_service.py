@@ -1,8 +1,8 @@
-import re
+import shutil
+from pathlib import Path
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
 from app.core.config import settings
-from app.storage.minio_client import get_minio
 from app.db import repository
 
 # ── serialization ─────────────────────────────────────────────────────────────
@@ -80,12 +80,9 @@ async def delete_conversation(pool, graph, conversation_id: str) -> None:
     state = await graph.aget_state(config)
     messages = state.values.get("messages", []) if state.values else []
 
-    minio = get_minio()
-    for obj in _extract_minio_objects(messages):
-        try:
-            minio.remove_object(settings.MINIO_BUCKET, obj)
-        except Exception:
-            pass
+    sandbox_dir = Path(settings.SANDBOX_DATA_DIR) / conversation_id
+    if sandbox_dir.exists():
+        shutil.rmtree(sandbox_dir, ignore_errors=True)
 
     await repository.delete_conversation(pool, conversation_id)
 
@@ -102,18 +99,3 @@ async def get_messages(graph, conversation_id: str) -> dict:
         "messages": serialize_messages(messages),
         "is_pending": bool(state.next),
     }
-
-
-# ── delete (with MinIO cleanup) ───────────────────────────────────────────────
-
-
-def _extract_minio_objects(messages: list) -> list[str]:
-    pattern = re.compile(
-        r"https?://[^/]+/" + re.escape(settings.MINIO_BUCKET) + r"/([^\s\)\"]+)"
-    )
-    objects = []
-    for msg in messages:
-        if isinstance(msg, ToolMessage):
-            for match in pattern.finditer(str(msg.content)):
-                objects.append(match.group(1))
-    return objects

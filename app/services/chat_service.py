@@ -76,7 +76,7 @@ class ToolStartEventHandler:
     def handle(self, event: dict) -> list[dict]:
         if event["name"] in VIZ_TOOLS:
             return []
-        return [{"type": "tool_start", "name": event["name"], "input": event["data"].get("input")}]
+        return [{"type": "tool_start", "name": event["name"], "input": event["data"].get("input"), "run_id": event.get("run_id", "")}]
 
 
 class ToolEndEventHandler:
@@ -89,7 +89,7 @@ class ToolEndEventHandler:
                 return [{"type": "viz", "format": data["__viz__"], "code": data["code"], "title": data.get("title", "")}]
         except Exception:
             pass
-        return [{"type": "tool_end", "name": event["name"], "output": output}]
+        return [{"type": "tool_end", "name": event["name"], "output": output, "run_id": event.get("run_id", "")}]
 
 
 # ---------------------------------------------------------------------------

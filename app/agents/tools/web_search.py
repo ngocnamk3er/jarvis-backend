@@ -6,9 +6,13 @@ from app.agents.messages import WebSearchMsg
 
 
 @tool
-def web_search(query: str) -> str:
+def web_search(query: str, label: str) -> str:
     """Search the internet for current information.
     Use a single, specific query. Call this tool at most once or twice per user request — stop and answer as soon as you have enough information.
+
+    Args:
+        query: Search query.
+        label: Brief human-readable description shown to the user (e.g. "Searching for Bitcoin price").
     """
     client = TavilyClient(api_key=settings.TAVILY_API_KEY)
     response = client.search(query=query, max_results=5, include_answer=True)

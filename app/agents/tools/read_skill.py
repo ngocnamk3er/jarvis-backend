@@ -27,10 +27,14 @@ def _list_skills() -> str:
 
 
 @tool
-def read_skill(name: str) -> str:
+def read_skill(name: str, label: str) -> str:
     """Read the full instructions for a skill by name.
     Call list_skills() first if you don't know available skill names.
     Available skills: python-dev, data-analysis, web-research.
+
+    Args:
+        name: Skill name to read.
+        label: Brief human-readable description shown to the user (e.g. "Loading data analysis skill").
     """
     if name == "__list__":
         return _list_skills()

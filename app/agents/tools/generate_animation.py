@@ -3,7 +3,7 @@ from langchain_core.tools import tool
 
 
 @tool
-def generate_animation(html: str, title: str = "") -> str:
+def generate_animation(html: str, label: str, title: str = "") -> str:
     """Create an interactive animation rendered directly in the chat window.
 
     Write a complete self-contained HTML page with embedded JS/CSS that produces

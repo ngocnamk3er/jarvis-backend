@@ -3,7 +3,7 @@ from langchain_core.tools import tool
 
 
 @tool
-def generate_webapp(html: str, title: str = "") -> str:
+def generate_webapp(html: str, label: str, title: str = "") -> str:
     """Render an interactive web app, game, or HTML/JS/CSS demo directly in the chat.
 
     Use this when the user asks for something interactive: games, simulations,

@@ -78,7 +78,9 @@ class ToolStartEventHandler:
     def handle(self, event: dict) -> list[dict]:
         if event["name"] in VIZ_TOOLS or event["name"] in HIDDEN_TOOLS:
             return []
-        return [{"type": "tool_start", "name": event["name"], "input": event["data"].get("input"), "run_id": event.get("run_id", "")}]
+        raw_input = dict(event["data"].get("input") or {})
+        label = raw_input.pop("label", None)
+        return [{"type": "tool_start", "name": event["name"], "label": label, "input": raw_input or None, "run_id": event.get("run_id", "")}]
 
 
 class ToolEndEventHandler:
@@ -210,8 +212,19 @@ class ChatService:
 
     async def resume(self, thread_id: str, decision: str, graph):
         config = _make_config(thread_id)
+
+        # Count pending action_requests so we send exactly N decisions
+        n = 1
+        state = await graph.aget_state(config)
+        for interrupt in getattr(state, "interrupts", ()):
+            value = interrupt.value
+            if isinstance(value, dict) and "action_requests" in value:
+                n = len(value["action_requests"])
+                break
+
+        decisions = [{"type": decision}] * n
         async for chunk in self._run_graph(
-            Command(resume={"decisions": [{"type": decision}]}), config, graph
+            Command(resume={"decisions": decisions}), config, graph
         ):
             yield chunk
 

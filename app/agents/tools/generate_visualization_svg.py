@@ -3,7 +3,7 @@ from langchain_core.tools import tool
 
 
 @tool
-def generate_visualization_svg(code: str, title: str = "") -> str:
+def generate_visualization_svg(code: str, label: str, title: str = "") -> str:
     """Render a custom SVG graphic for anything that is not flow-based.
 
     Use this for bar charts, pie charts, line graphs, illustrations, icons,

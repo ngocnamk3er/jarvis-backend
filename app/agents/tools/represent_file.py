@@ -9,7 +9,7 @@ from app.agents.tools.sandbox_manager import get_thread_id, resolve_virtual_path
 
 
 @tool
-def represent_file(path: str, config: RunnableConfig) -> str:
+def represent_file(path: str, label: str, config: RunnableConfig) -> str:
     """Expose a file from the sandbox so the user can download or preview it.
 
     Use this when you have already created a file in /workspace or /output
@@ -23,6 +23,7 @@ def represent_file(path: str, config: RunnableConfig) -> str:
 
     Args:
         path: Virtual path to the file inside the sandbox.
+        label: Brief human-readable description shown to the user (e.g. "Exporting chart.png").
     """
     thread_id = get_thread_id(config)
     src = resolve_virtual_path(path, thread_id)

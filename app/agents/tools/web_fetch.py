@@ -4,10 +4,14 @@ from langchain_core.tools import tool
 
 
 @tool
-def web_fetch(url: str) -> str:
+def web_fetch(url: str, label: str) -> str:
     """Fetch the content of a web page and return it as markdown.
     Use this to read articles, documentation, or any public web page when you have a specific URL.
     Do not use for URLs that require authentication or login.
+
+    Args:
+        url: URL to fetch.
+        label: Brief human-readable description shown to the user (e.g. "Reading Python docs").
     """
     try:
         with httpx.Client(follow_redirects=True, timeout=15) as client:

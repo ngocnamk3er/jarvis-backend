@@ -11,7 +11,7 @@ from app.agents.tools.sandbox_manager import (
 
 
 @tool
-def bash(command: str, config: RunnableConfig) -> str:
+def bash(command: str, label: str, config: RunnableConfig) -> str:
     """Execute a bash command inside the sandbox and return stdout.
 
     Three persistent directories are available:
@@ -27,6 +27,7 @@ def bash(command: str, config: RunnableConfig) -> str:
 
     Args:
         command: Bash command to execute.
+        label: Brief human-readable description shown to the user (e.g. "Running fibonacci script", "Installing pandas").
     """
     thread_id = get_thread_id(config)
 

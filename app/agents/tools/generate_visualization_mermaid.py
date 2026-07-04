@@ -3,7 +3,7 @@ from langchain_core.tools import tool
 
 
 @tool
-def generate_visualization_mermaid(code: str, title: str = "") -> str:
+def generate_visualization_mermaid(code: str, label: str, title: str = "") -> str:
     """Render a Mermaid diagram when the user needs a flow-based visual.
 
     Use this for anything flow-related: flowcharts, sequence diagrams, state

@@ -34,16 +34,17 @@ def resolve_virtual_path(virtual_path: str, thread_id: str) -> Path:
     base = Path(settings.SANDBOX_DATA_DIR) / thread_id
     vp = virtual_path.strip()
     if vp.startswith(VIRTUAL_WORKSPACE):
-        return base / "workspace" / vp[len(VIRTUAL_WORKSPACE):].lstrip("/")
+        return base / "workspace" / vp[len(VIRTUAL_WORKSPACE) :].lstrip("/")
     if vp.startswith(VIRTUAL_OUTPUT):
-        return base / "output" / vp[len(VIRTUAL_OUTPUT):].lstrip("/")
+        return base / "output" / vp[len(VIRTUAL_OUTPUT) :].lstrip("/")
     if vp.startswith(VIRTUAL_UPLOAD):
-        return base / "upload" / vp[len(VIRTUAL_UPLOAD):].lstrip("/")
+        return base / "upload" / vp[len(VIRTUAL_UPLOAD) :].lstrip("/")
     return base / "workspace" / vp.lstrip("/")
 
 
 def replace_virtual_paths(code: str, _conversation_id: str) -> str:
     """Replace /output, /workspace, /upload with real container paths before execution."""
+
     def _sub(m: re.Match) -> str:
         prefix = m.group(0)[: m.start(1) - m.start()]
         virtual = m.group(1)
@@ -122,10 +123,15 @@ def ensure_venv(thread_id: str) -> None:
     try:
         subprocess.run(
             [
-                "docker", "exec",
-                "-e", "UV_LINK_MODE=copy",
+                "docker",
+                "exec",
+                "-e",
+                "UV_LINK_MODE=copy",
                 _container_name(thread_id),
-                "uv", "venv", "--seed", "--system-site-packages",
+                "uv",
+                "venv",
+                "--seed",
+                "--system-site-packages",
                 f"{_SANDBOX_MOUNT}/.venv",
             ],
             check=True,
@@ -154,16 +160,26 @@ def ensure_container_running(thread_id: str) -> str:
     try:
         subprocess.run(
             [
-                "docker", "run", "-d",
-                "--name", container,
-                "--memory", "512m",
-                "--cpus", "1.0",
-                "--security-opt", "no-new-privileges:true",
-                "--tmpfs", "/tmp:size=4g,exec",
-                "-v", f"{_UV_CACHE_VOLUME}:/root/.cache/uv",
-                "-v", f"{host_dir}:{_SANDBOX_MOUNT}",
+                "docker",
+                "run",
+                "-d",
+                "--name",
+                container,
+                "--memory",
+                "512m",
+                "--cpus",
+                "1.0",
+                "--security-opt",
+                "no-new-privileges:true",
+                "--tmpfs",
+                "/tmp:size=4g,exec",
+                "-v",
+                f"{_UV_CACHE_VOLUME}:/root/.cache/uv",
+                "-v",
+                f"{host_dir}:{_SANDBOX_MOUNT}",
                 _DOCKER_IMAGE,
-                "sleep", "infinity",
+                "sleep",
+                "infinity",
             ],
             check=True,
             capture_output=True,
@@ -200,10 +216,13 @@ def exec_bash_in_sandbox(
 
     return subprocess.run(
         [
-            "docker", "exec",
-            "-w", f"{_SANDBOX_MOUNT}/workspace",
+            "docker",
+            "exec",
+            "-w",
+            f"{_SANDBOX_MOUNT}/workspace",
             _container_name(conversation_id),
-            "bash", "-c",
+            "bash",
+            "-c",
             env_prefix + real_command,
         ],
         capture_output=True,
@@ -224,8 +243,10 @@ def exec_in_sandbox(
 
     return subprocess.run(
         [
-            "docker", "exec",
-            "-w", f"{_SANDBOX_MOUNT}/workspace",
+            "docker",
+            "exec",
+            "-w",
+            f"{_SANDBOX_MOUNT}/workspace",
             "-i",
             _container_name(conversation_id),
             f"{_SANDBOX_MOUNT}/.venv/bin/python",

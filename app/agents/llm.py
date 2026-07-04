@@ -1,8 +1,15 @@
 from langchain_openai import ChatOpenAI
 from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.messages import AIMessageChunk
+from langchain_community.cache import SQLiteCache
+from langchain_core.globals import set_llm_cache
 
 from app.core.config import settings
+
+
+def enable_llm_cache(path: str = ".langchain_cache.db") -> None:
+    """Enable SQLite-backed LLM response cache. Same prompt → same response, no API call."""
+    set_llm_cache(SQLiteCache(database_path=path))
 
 
 class ThinkingChatOpenAI(ChatOpenAI):

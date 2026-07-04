@@ -21,6 +21,8 @@ class Settings(BaseSettings):
 
     SANDBOX_DATA_DIR: str = str(Path(__file__).parent.parent.parent / "data" / "sandboxes")
 
+    LLM_CACHE: bool = False
+
     class Config:
         env_file = ".env"
         case_sensitive = True

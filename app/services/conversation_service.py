@@ -49,12 +49,15 @@ def serialize_messages(messages: list) -> list[dict]:
                         continue
                 except Exception:
                     pass
+                tool_input = dict(tc["args"] or {})
+                tool_label = tool_input.pop("label", None)
                 pending_parts.append(
                     {
                         "type": "tool",
                         "tool": {
                             "name": tc["name"],
-                            "input": tc["args"],
+                            "label": tool_label,
+                            "input": tool_input or None,
                             "output": raw_output,
                             "status": "done",
                         },

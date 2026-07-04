@@ -3,6 +3,7 @@ from langchain.agents.middleware import (
     SummarizationMiddleware,
     HumanInTheLoopMiddleware,
     TodoListMiddleware,
+    ToolCallLimitMiddleware,
 )
 
 from app.agents.llm import build_llm
@@ -26,5 +27,9 @@ def build_graph(checkpointer=None):
                 interrupt_on={"bash": {"allowed_decisions": ["approve", "reject"]}},
             ),
             TodoListMiddleware(),
+            ToolCallLimitMiddleware(
+                tool_name="web_search",
+                run_limit=3,
+            ),
         ],
     )

@@ -5,7 +5,7 @@ from pathlib import Path
 from app.core.config import settings
 
 _DOCKER_IMAGE = "jarvis-sandbox"
-_PIP_CACHE_VOLUME = "jarvis-pip-cache"
+_UV_CACHE_VOLUME = "jarvis-uv-cache"
 _CONTAINER_NAME = "jarvis-sandbox"
 _SANDBOX_MOUNT = "/sandbox"
 
@@ -13,6 +13,7 @@ _SANDBOX_MOUNT = "/sandbox"
 VIRTUAL_WORKSPACE = "/workspace"
 VIRTUAL_OUTPUT = "/output"
 VIRTUAL_UPLOAD = "/upload"
+VIRTUAL_VENV = "/venv"
 
 # Match virtual paths only when they appear as a root path expression
 # (preceded by quote, whitespace, (, =, [, comma) to avoid replacing subpaths like /workspace/output
@@ -59,6 +60,7 @@ def mask_real_paths(text: str, conversation_id: str) -> str:
     text = text.replace(f"{base}/workspace", VIRTUAL_WORKSPACE)
     text = text.replace(f"{base}/output", VIRTUAL_OUTPUT)
     text = text.replace(f"{base}/upload", VIRTUAL_UPLOAD)
+    text = text.replace(f"{base}/.venv", VIRTUAL_VENV)
     return text
 
 
@@ -66,6 +68,30 @@ def _prepare_host_dirs(conversation_id: str) -> None:
     base = Path(settings.SANDBOX_DATA_DIR) / conversation_id
     for folder in ("workspace", "output", "upload"):
         (base / folder).mkdir(parents=True, exist_ok=True)
+
+
+def ensure_venv(thread_id: str) -> None:
+    """Create a per-conversation uv venv if it doesn't exist yet."""
+    # pyvenv.cfg is a plain file (not a symlink) — reliable existence check
+    pyvenv_cfg = Path(settings.SANDBOX_DATA_DIR) / thread_id / ".venv" / "pyvenv.cfg"
+    if pyvenv_cfg.exists():
+        return
+    try:
+        subprocess.run(
+            [
+                "docker", "exec",
+                "-e", "UV_LINK_MODE=copy",
+                _CONTAINER_NAME,
+                "uv", "venv", "--seed", "--system-site-packages",
+                f"{_SANDBOX_MOUNT}/{thread_id}/.venv",
+            ],
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError:
+        # Race condition: another concurrent call may have created the venv just before us
+        if not pyvenv_cfg.exists():
+            raise
 
 
 def ensure_container_running() -> str:
@@ -97,7 +123,7 @@ def ensure_container_running() -> str:
                 "--tmpfs",
                 "/tmp:size=4g,exec",
                 "-v",
-                f"{_PIP_CACHE_VOLUME}:/root/.cache/pip",
+                f"{_UV_CACHE_VOLUME}:/root/.cache/uv",
                 "-v",
                 f"{settings.SANDBOX_DATA_DIR}:{_SANDBOX_MOUNT}",
                 _DOCKER_IMAGE,
@@ -124,13 +150,16 @@ def exec_bash_in_sandbox(
 ) -> subprocess.CompletedProcess:
     """Execute a bash command in the sandbox with virtual path mapping."""
     _prepare_host_dirs(conversation_id)
+    ensure_venv(conversation_id)
     real_command = replace_virtual_paths(command, conversation_id)
     base = _real_base(conversation_id)
     workspace_dir = f"{base}/workspace"
+    venv_bin = f"{_SANDBOX_MOUNT}/{conversation_id}/.venv/bin"
 
-    # Inject env vars so Python scripts can resolve virtual paths at runtime
     env_prefix = (
-        f"export WORKSPACE={base}/workspace "
+        f"export PATH={venv_bin}:$PATH "
+        f"VIRTUAL_ENV={_SANDBOX_MOUNT}/{conversation_id}/.venv "
+        f"WORKSPACE={base}/workspace "
         f"OUTPUT={base}/output "
         f"UPLOAD={base}/upload && "
     )
@@ -161,8 +190,10 @@ def exec_in_sandbox(
     conversation-scoped paths before exec, then mask them back in the output.
     """
     _prepare_host_dirs(conversation_id)
+    ensure_venv(conversation_id)
     real_code = replace_virtual_paths(code, conversation_id)
     workspace_dir = f"{_SANDBOX_MOUNT}/{conversation_id}/workspace"
+    venv_python = f"{_SANDBOX_MOUNT}/{conversation_id}/.venv/bin/python"
 
     return subprocess.run(
         [
@@ -172,7 +203,7 @@ def exec_in_sandbox(
             workspace_dir,
             "-i",
             _CONTAINER_NAME,
-            "python",
+            venv_python,
             "-",
         ],
         input=real_code,

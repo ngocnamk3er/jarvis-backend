@@ -26,3 +26,6 @@ RUN pip install --no-cache-dir \
 
 # TensorFlow (CPU)
 RUN pip install --no-cache-dir tensorflow-cpu
+
+# uv — fast package manager for per-conversation venvs
+RUN pip install --no-cache-dir uv

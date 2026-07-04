@@ -4,7 +4,6 @@ from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
 
 from app.agents.tools.sandbox_manager import (
-    ensure_container_running,
     exec_bash_in_sandbox,
     get_thread_id,
     mask_real_paths,
@@ -32,7 +31,6 @@ def bash(command: str, config: RunnableConfig) -> str:
     thread_id = get_thread_id(config)
 
     try:
-        ensure_container_running()
         result = exec_bash_in_sandbox(thread_id, command)
     except FileNotFoundError:
         return "Error: Docker is not available on this system."

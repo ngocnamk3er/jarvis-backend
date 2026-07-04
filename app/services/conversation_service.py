@@ -4,6 +4,7 @@ from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
 from app.core.config import settings
 from app.db import repository
+from app.agents.tools.sandbox_manager import stop_container
 
 # ── serialization ─────────────────────────────────────────────────────────────
 
@@ -76,9 +77,7 @@ async def create_conversation(pool, title: str):
 
 
 async def delete_conversation(pool, graph, conversation_id: str) -> None:
-    config = {"configurable": {"thread_id": conversation_id}}
-    state = await graph.aget_state(config)
-    messages = state.values.get("messages", []) if state.values else []
+    stop_container(conversation_id)
 
     sandbox_dir = Path(settings.SANDBOX_DATA_DIR) / conversation_id
     if sandbox_dir.exists():

@@ -1,5 +1,6 @@
 import json
 from langchain_core.messages import HumanMessage
+from langgraph.types import Command
 
 # ---------------------------------------------------------------------------
 # Thinking parser — splits <think>…</think> out of the content stream
@@ -93,6 +94,32 @@ class ToolEndEventHandler:
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_config(thread_id: str, thinking_effort: str = "high", model: str | None = None) -> dict:
+    return {
+        "configurable": {"thread_id": thread_id, "thinking_effort": thinking_effort, "model": model},
+        "recursion_limit": 50,
+    }
+
+
+def _extract_hitl_events(state) -> list[str]:
+    """Return serialised hitl_request SSE lines for any pending HITL interrupts."""
+    events = []
+    for interrupt in getattr(state, "interrupts", ()):
+        value = interrupt.value
+        if isinstance(value, dict) and "action_requests" in value:
+            events.append(json.dumps({
+                "type": "hitl_request",
+                "actions": value["action_requests"],
+                "review_configs": value.get("review_configs", []),
+            }))
+    return events
+
+
+# ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------
 
@@ -138,19 +165,13 @@ class ChatService:
 
         return events
 
-    async def stream(self, thread_id: str, content: str, graph, thinking_effort: str = "high", model: str | None = None):
-        config = {
-            "configurable": {"thread_id": thread_id, "thinking_effort": thinking_effort, "model": model},
-            "recursion_limit": 50,
-        }
+    async def _run_graph(self, graph_input, config: dict, graph):
+        """Yield SSE lines by streaming graph events, then emit any HITL interrupt."""
         parser = ThinkingParser()
         viz_indexes: set[int] = set()
+        hitl_lines: list[str] = []
         try:
-            async for event in graph.astream_events(
-                {"messages": [HumanMessage(content=content)]},
-                config=config,
-                version="v2",
-            ):
+            async for event in graph.astream_events(graph_input, config=config, version="v2"):
                 results: list[dict] | None = None
 
                 if event["event"] == "on_chat_model_stream":
@@ -163,10 +184,31 @@ class ChatService:
                 if results:
                     for data in results:
                         yield f"data: {json.dumps(data)}\n\n"
+
+            # After normal stream completion check for pending HITL interrupt
+            state = await graph.aget_state(config)
+            hitl_lines = _extract_hitl_events(state)
+
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-        finally:
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+        for line in hitl_lines:
+            yield f"data: {line}\n\n"
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    async def stream(self, thread_id: str, content: str, graph, thinking_effort: str = "high", model: str | None = None):
+        config = _make_config(thread_id, thinking_effort, model)
+        async for chunk in self._run_graph(
+            {"messages": [HumanMessage(content=content)]}, config, graph
+        ):
+            yield chunk
+
+    async def resume(self, thread_id: str, decision: str, graph):
+        config = _make_config(thread_id)
+        async for chunk in self._run_graph(
+            Command(resume={"decisions": [{"type": decision}]}), config, graph
+        ):
+            yield chunk
 
 
 chat_service = ChatService()

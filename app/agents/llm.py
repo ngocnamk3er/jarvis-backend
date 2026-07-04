@@ -6,14 +6,29 @@ from app.core.config import settings
 
 
 class ThinkingChatOpenAI(ChatOpenAI):
-    """ChatOpenAI that rescues OpenRouter's `reasoning` delta field.
-
-    LangChain's _convert_delta_to_message_chunk ignores unknown delta keys,
-    so `reasoning` is dropped before we can read it. We override
-    _convert_chunk_to_generation_chunk to fish it out of the raw dict
-    (after model_dump()) and store it in additional_kwargs so chat_service
-    can emit it as a thinking_token SSE event.
+    """ChatOpenAI with two additions:
+    1. Reads `thinking_effort` and `model` from LangGraph's configurable at
+       request time so the caller can steer reasoning depth and model per-turn.
+    2. Rescues OpenRouter's `reasoning` delta field that LangChain drops,
+       storing it in additional_kwargs so chat_service emits thinking_token events.
     """
+
+    def _get_request_payload(self, input_, *, stop=None, **kwargs):
+        try:
+            from langgraph.config import get_config
+            cfg = get_config().get("configurable", {})
+        except RuntimeError:
+            cfg = {}
+
+        effort = cfg.get("thinking_effort", "high")
+        if "extra_body" not in kwargs:
+            kwargs["extra_body"] = {"reasoning": {"effort": effort, "exclude": False}}
+
+        model_override = cfg.get("model")
+        if model_override and "model" not in kwargs:
+            kwargs["model"] = model_override
+
+        return super()._get_request_payload(input_, stop=stop, **kwargs)
 
     def _convert_chunk_to_generation_chunk(
         self,

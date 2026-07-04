@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
-from app.schemas.chat import ChatRequest, AVAILABLE_MODELS
+from app.schemas.chat import ChatRequest, ResumeRequest, AVAILABLE_MODELS
 from app.services.chat_service import chat_service
 from app.db import repository
 from app.db.connection import get_pool
@@ -23,5 +23,14 @@ async def chat_stream(request: ChatRequest, req: Request):
 
     return StreamingResponse(
         chat_service.stream(request.thread_id, request.content, graph, request.thinking_effort, request.model),
+        media_type="text/event-stream",
+    )
+
+
+@router.post("/resume")
+async def chat_resume(request: ResumeRequest, req: Request):
+    graph = req.app.state.graph
+    return StreamingResponse(
+        chat_service.resume(request.thread_id, request.decision, graph),
         media_type="text/event-stream",
     )

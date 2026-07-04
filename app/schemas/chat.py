@@ -17,3 +17,8 @@ class ChatRequest(BaseModel):
     content: str
     thinking_effort: Literal["low", "medium", "high", "xhigh"] = "high"
     model: str = DEFAULT_MODEL
+
+
+class ResumeRequest(BaseModel):
+    thread_id: str
+    decision: Literal["approve", "reject"]

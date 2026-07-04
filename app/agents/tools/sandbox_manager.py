@@ -1,5 +1,6 @@
 import re
 import subprocess
+import time
 from pathlib import Path
 
 from app.core.config import settings
@@ -7,6 +8,7 @@ from app.core.config import settings
 _DOCKER_IMAGE = "jarvis-sandbox"
 _UV_CACHE_VOLUME = "jarvis-uv-cache"
 _SANDBOX_MOUNT = "/sandbox"
+_LAST_USED_FILE = ".last_used"
 
 # Virtual paths the agent sees — never exposed as real paths
 VIRTUAL_WORKSPACE = "/workspace"
@@ -64,6 +66,51 @@ def _prepare_host_dirs(conversation_id: str) -> None:
     base = Path(settings.SANDBOX_DATA_DIR) / conversation_id
     for folder in ("workspace", "output", "upload"):
         (base / folder).mkdir(parents=True, exist_ok=True)
+
+
+def _touch_last_used(thread_id: str) -> None:
+    """Update the last-used timestamp for a sandbox."""
+    f = Path(settings.SANDBOX_DATA_DIR) / thread_id / _LAST_USED_FILE
+    try:
+        f.write_text(str(time.time()))
+    except OSError:
+        pass
+
+
+def stop_container(thread_id: str) -> None:
+    """Force-remove the sandbox container for a conversation (idempotent)."""
+    subprocess.run(
+        ["docker", "rm", "-f", _container_name(thread_id)],
+        capture_output=True,
+    )
+
+
+def cleanup_expired_sandboxes(ttl_minutes: int = 30) -> int:
+    """Stop containers that haven't been used in ttl_minutes. Returns count stopped."""
+    cutoff = time.time() - ttl_minutes * 60
+    data_dir = Path(settings.SANDBOX_DATA_DIR)
+    if not data_dir.exists():
+        return 0
+
+    stopped = 0
+    for thread_dir in data_dir.iterdir():
+        if not thread_dir.is_dir():
+            continue
+        last_used_file = thread_dir / _LAST_USED_FILE
+        if last_used_file.exists():
+            try:
+                mtime = float(last_used_file.read_text().strip())
+            except (ValueError, OSError):
+                continue
+        else:
+            # No activity recorded yet — fall back to directory mtime
+            mtime = thread_dir.stat().st_mtime
+
+        if mtime < cutoff:
+            stop_container(thread_dir.name)
+            stopped += 1
+
+    return stopped
 
 
 def ensure_venv(thread_id: str) -> None:
@@ -140,6 +187,7 @@ def exec_bash_in_sandbox(
     _prepare_host_dirs(conversation_id)
     ensure_container_running(conversation_id)
     ensure_venv(conversation_id)
+    _touch_last_used(conversation_id)
     real_command = replace_virtual_paths(command, conversation_id)
 
     env_prefix = (
@@ -171,6 +219,7 @@ def exec_in_sandbox(
     _prepare_host_dirs(conversation_id)
     ensure_container_running(conversation_id)
     ensure_venv(conversation_id)
+    _touch_last_used(conversation_id)
     real_code = replace_virtual_paths(code, conversation_id)
 
     return subprocess.run(

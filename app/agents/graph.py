@@ -1,5 +1,9 @@
 from langchain.agents import create_agent
-from langchain.agents.middleware import SummarizationMiddleware, HumanInTheLoopMiddleware, TodoListMiddleware
+from langchain.agents.middleware import (
+    SummarizationMiddleware,
+    HumanInTheLoopMiddleware,
+    TodoListMiddleware,
+)
 
 from app.agents.llm import build_llm
 from app.agents.prompt import SYSTEM_PROMPT

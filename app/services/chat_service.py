@@ -71,17 +71,20 @@ class ThinkingParser:
 
 
 VIZ_TOOLS = {"generate_visualization_mermaid", "generate_visualization_svg", "generate_animation", "generate_webapp"}
+HIDDEN_TOOLS = {"write_todos"}
 
 
 class ToolStartEventHandler:
     def handle(self, event: dict) -> list[dict]:
-        if event["name"] in VIZ_TOOLS:
+        if event["name"] in VIZ_TOOLS or event["name"] in HIDDEN_TOOLS:
             return []
         return [{"type": "tool_start", "name": event["name"], "input": event["data"].get("input"), "run_id": event.get("run_id", "")}]
 
 
 class ToolEndEventHandler:
     def handle(self, event: dict) -> list[dict]:
+        if event["name"] in HIDDEN_TOOLS:
+            return []
         raw = event["data"].get("output")
         output = raw.content if hasattr(raw, "content") else str(raw)
         try:
@@ -150,6 +153,8 @@ class ChatService:
             index = tc.get("index", 0)
             args_delta = tc.get("args", "") or ""
             if name and name in VIZ_TOOLS:
+                viz_indexes.add(index)
+            if name and name in HIDDEN_TOOLS:
                 viz_indexes.add(index)
             if index in viz_indexes:
                 continue

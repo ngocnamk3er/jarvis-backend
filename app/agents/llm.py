@@ -65,4 +65,5 @@ def build_llm(model: str | None = None) -> ThinkingChatOpenAI:
         api_key=settings.OPENROUTER_API_KEY,
         base_url=settings.OPENROUTER_BASE_URL,
         streaming=True,
+        temperature=0,
     )

@@ -1,11 +1,12 @@
 import asyncio
+import json
 import sys
 import threading
 import time
 import traceback
 
 from fastapi import APIRouter
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 router = APIRouter()
 
@@ -147,34 +148,29 @@ function updateGrid(gridId, threads, maxSlots, countId) {
   document.getElementById(countId).textContent = `${busy}/${threads.length}`;
 }
 
-async function poll() {
-  try {
-    const res = await fetch('/api/v1/debug/threads');
-    const data = await res.json();
+function render(data) {
+  document.getElementById('ts').textContent = new Date(data.timestamp * 1000).toLocaleTimeString();
 
-    document.getElementById('ts').textContent = new Date(data.timestamp * 1000).toLocaleTimeString();
+  const tasks = data.tasks.filter(t => !t.done);
+  document.getElementById('task-count').textContent = `${tasks.length} tasks`;
+  document.getElementById('task-list').innerHTML = tasks.map(t => `
+    <div class="task ${t.state}">
+      <div class="task-name">${t.name}</div>
+      <div class="task-coro">${t.coro}</div>
+    </div>`).join('');
 
-    // Tasks
-    const tasks = data.tasks.filter(t => !t.done);
-    document.getElementById('task-count').textContent = `${tasks.length} tasks`;
-    document.getElementById('task-list').innerHTML = tasks.map(t => `
-      <div class="task ${t.state}">
-        <div class="task-name">${t.name}</div>
-        <div class="task-coro">${t.coro}</div>
-      </div>`).join('');
+  const asyncioThreads = data.threads.filter(t => t.category === 'asyncio_pool');
+  const anyioThreads   = data.threads.filter(t => t.category === 'anyio_pool');
 
-    // Thread pools
-    const asyncio = data.threads.filter(t => t.category === 'asyncio_pool');
-    const anyio   = data.threads.filter(t => t.category === 'anyio_pool');
+  updateGrid('asyncio-grid', asyncioThreads, MAX_ASYNCIO, 'asyncio-count');
+  updateGrid('anyio-grid',   anyioThreads,   MAX_ANYIO,   'anyio-count');
 
-    updateGrid('asyncio-grid', asyncio, MAX_ASYNCIO, 'asyncio-count');
-    updateGrid('anyio-grid',   anyio,   MAX_ANYIO,   'anyio-count');
-
-    document.getElementById('rps-badge').textContent = `threads: ${data.threads.length}`;
-  } catch(e) { console.error(e); }
-  setTimeout(poll, 600);
+  document.getElementById('rps-badge').textContent = `threads: ${data.threads.length}`;
 }
-poll();
+
+const es = new EventSource('/api/v1/debug/threads/stream');
+es.onmessage = (e) => render(JSON.parse(e.data));
+es.onerror = () => document.getElementById('ts').textContent = 'disconnected';
 </script>
 </body>
 </html>"""
@@ -191,31 +187,35 @@ def _get_stack(frame, limit: int = 6) -> list[dict]:
 
 @router.get("/threads", response_class=JSONResponse)
 async def threads_api():
+    return await _snapshot()
+
+
+# Cached once the asyncio default executor is created (lazy init).
+# Format: "ThreadPoolExecutor-0" — threads named "ThreadPoolExecutor-0_N" belong to asyncio pool.
+_asyncio_pool_prefix: str = ""
+
+
+def _thread_snapshot(asyncio_pool_prefix: str) -> tuple[list[dict], str]:
+    """Sync — safe to run in a thread. Returns (threads, self_thread_name).
+    self_thread_name lets the caller learn which pool asyncio.to_thread dispatched to."""
+    self_name = threading.current_thread().name
+    # Infer asyncio pool prefix from own name if not yet known: "ThreadPoolExecutor-1_0" → "ThreadPoolExecutor-1"
+    if not asyncio_pool_prefix and "_" in self_name:
+        asyncio_pool_prefix = self_name.rsplit("_", 1)[0]
+
     frames = sys._current_frames()
-
-    # Identify asyncio default executor threads
-    asyncio_thread_names: set[str] = set()
-    try:
-        loop = asyncio.get_event_loop()
-        ex = getattr(loop, "_default_executor", None)
-        if ex:
-            asyncio_thread_names = {t.name for t in getattr(ex, "_threads", set())}
-    except Exception:
-        pass
-
-    threads_out = []
+    out = []
     for thread in threading.enumerate():
         name = thread.name
         if name == "MainThread":
             cat = "main"
-        elif name in asyncio_thread_names:
+        elif asyncio_pool_prefix and name.startswith(asyncio_pool_prefix):
             cat = "asyncio_pool"
         elif "ThreadPoolExecutor" in name or "AnyIO" in name or "anyio" in name.lower():
             cat = "anyio_pool"
         else:
             cat = "other"
-
-        threads_out.append({
+        out.append({
             "id": thread.ident,
             "name": name,
             "daemon": thread.daemon,
@@ -223,6 +223,18 @@ async def threads_api():
             "category": cat,
             "stack": _get_stack(frames.get(thread.ident)),
         })
+    return out, self_name
+
+
+async def _snapshot() -> dict:
+    """Async — asyncio.all_tasks() must run on the event loop, not in a thread."""
+    global _asyncio_pool_prefix
+
+    threads_out, self_name = await asyncio.to_thread(_thread_snapshot, _asyncio_pool_prefix)
+
+    # _thread_snapshot infers the prefix from its own thread name on first call
+    if not _asyncio_pool_prefix and "_" in self_name:
+        _asyncio_pool_prefix = self_name.rsplit("_", 1)[0]
 
     tasks_out = []
     for task in asyncio.all_tasks():
@@ -234,11 +246,20 @@ async def threads_api():
             "state": "done" if task.done() else "running",
         })
 
-    return {
-        "threads": threads_out,
-        "tasks": tasks_out,
-        "timestamp": time.time(),
-    }
+    return {"threads": threads_out, "tasks": tasks_out, "timestamp": time.time()}
+
+
+@router.get("/threads/stream")
+async def threads_stream():
+
+    async def _generate():
+        while True:
+            data = await _snapshot()
+            yield f"data: {json.dumps(data)}\n\n"
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(_generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.get("/threads/ui", response_class=HTMLResponse)

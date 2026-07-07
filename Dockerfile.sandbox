@@ -8,24 +8,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxml2-dev libxslt-dev libjpeg-dev libpng-dev \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# General Python libraries
-RUN pip install --no-cache-dir \
-    numpy pandas scipy statsmodels \
-    matplotlib seaborn plotly kaleido \
-    scikit-learn xgboost lightgbm \
-    nltk \
-    requests httpx beautifulsoup4 lxml \
-    openpyxl xlrd python-docx reportlab fpdf2 pillow svgwrite \
-    yfinance \
-    tqdm rich tabulate pyyaml toml python-dateutil pytz regex
+# General Python libraries — split into smaller layers so a network
+# blip on one group doesn't force re-downloading everything, and add
+# generous timeout/retries to tolerate a slow/flaky connection.
+ENV PIP_DEFAULT_TIMEOUT=300 \
+    PIP_RETRIES=10
 
-# PyTorch (CPU) — separate index
-RUN pip install --no-cache-dir \
-    torch torchvision torchaudio \
-    --index-url https://download.pytorch.org/whl/cpu
-
-# TensorFlow (CPU)
-RUN pip install --no-cache-dir tensorflow-cpu
+RUN pip install --no-cache-dir numpy pandas scipy statsmodels
+RUN pip install --no-cache-dir matplotlib seaborn plotly kaleido
+RUN pip install --no-cache-dir scikit-learn xgboost lightgbm nltk
+RUN pip install --no-cache-dir requests httpx beautifulsoup4 lxml
+RUN pip install --no-cache-dir openpyxl xlrd python-docx reportlab fpdf2 pillow svgwrite
+RUN pip install --no-cache-dir yfinance
+RUN pip install --no-cache-dir tqdm rich tabulate pyyaml toml python-dateutil pytz regex
 
 # uv — fast package manager for per-conversation venvs
 RUN pip install --no-cache-dir uv

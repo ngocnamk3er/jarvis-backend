@@ -227,6 +227,8 @@ def exec_bash_in_sandbox(
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
     )
 
@@ -255,5 +257,7 @@ def exec_in_sandbox(
         input=real_code,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
     )

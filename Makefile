@@ -13,7 +13,7 @@ run:
 	$(UVICORN) app.main:app --host 0.0.0.0 --port 8000
 
 dev:
-	$(UVICORN) app.main:app --host 0.0.0.0 --port 8000 --reload
+	$(UVICORN) app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app
 
 shell:
 	$(PYTHON)

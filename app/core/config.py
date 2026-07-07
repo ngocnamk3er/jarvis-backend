@@ -19,6 +19,13 @@ class Settings(BaseSettings):
 
     BACKEND_URL: str = "http://localhost:8000"
 
+    MINIO_ENDPOINT: str = "localhost:9000"
+    MINIO_ACCESS_KEY: str = "jarvis"
+    MINIO_SECRET_KEY: str = "jarvis123"
+    MINIO_BUCKET: str = "jarvis-files"
+    MINIO_PUBLIC_URL: str = "http://localhost:9000"
+    MINIO_SECURE: bool = False
+
     SANDBOX_DATA_DIR: str = str(Path(__file__).parent.parent.parent / "data" / "sandboxes")
 
     LLM_CACHE: bool = False

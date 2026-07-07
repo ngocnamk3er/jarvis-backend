@@ -1,10 +1,11 @@
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
-    SummarizationMiddleware,
     HumanInTheLoopMiddleware,
     TodoListMiddleware,
     ToolCallLimitMiddleware,
 )
+from deepagents.middleware.summarization import SummarizationMiddleware
+from deepagents.backends import StateBackend
 
 from app.agents.llm import build_llm
 from app.agents.prompt import SYSTEM_PROMPT
@@ -20,8 +21,10 @@ def build_graph(checkpointer=None):
         middleware=[
             SummarizationMiddleware(
                 model=build_llm(),
+                backend=StateBackend,
                 trigger=("tokens", 60000),
                 keep=("messages", 20),
+                trim_tokens_to_summarize=40000,
             ),
             HumanInTheLoopMiddleware(
                 interrupt_on={"bash": {"allowed_decisions": ["approve", "reject"]}},
@@ -29,12 +32,12 @@ def build_graph(checkpointer=None):
             TodoListMiddleware(),
             ToolCallLimitMiddleware(
                 tool_name="web_search",
-                run_limit=3,
+                run_limit=50,
                 exit_behavior="end",
             ),
             ToolCallLimitMiddleware(
                 tool_name="web_fetch",
-                run_limit=3,
+                run_limit=50,
                 exit_behavior="end",
             ),
         ],

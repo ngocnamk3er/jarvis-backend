@@ -114,7 +114,7 @@ class ToolEndEventHandler:
 def _make_config(thread_id: str, thinking_effort: str = "high", model: str | None = None) -> dict:
     return {
         "configurable": {"thread_id": thread_id, "thinking_effort": thinking_effort, "model": model},
-        "recursion_limit": 50,
+        "recursion_limit": 200,
     }
 
 

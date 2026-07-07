@@ -27,10 +27,17 @@ def serialize_messages(messages: list) -> list[dict]:
     for msg in messages:
         if isinstance(msg, HumanMessage):
             flush()
+            content = str(msg.content)
+            if content.startswith("Here is a summary of the conversation to date:"):
+                result.append({
+                    "role": "system",
+                    "parts": [{"type": "text", "content": "Earlier messages in this conversation were summarized."}],
+                })
+                continue
             result.append(
                 {
                     "role": "user",
-                    "parts": [{"type": "text", "content": str(msg.content)}],
+                    "parts": [{"type": "text", "content": content}],
                 }
             )
         elif isinstance(msg, AIMessage):
@@ -39,7 +46,10 @@ def serialize_messages(messages: list) -> list[dict]:
                 pending_parts.append({"type": "thinking", "content": reasoning, "isStreaming": False})
             if msg.content:
                 pending_parts.append({"type": "text", "content": str(msg.content)})
-            for tc in msg.tool_calls or []:
+            tool_calls = msg.tool_calls or []
+            # Tools in the same AIMessage were called in parallel — share a batch key
+            batch_id = msg.id if len(tool_calls) > 1 else None
+            for tc in tool_calls:
                 raw_output = tool_outputs.get(tc["id"], "")
                 try:
                     import json as _json
@@ -51,18 +61,16 @@ def serialize_messages(messages: list) -> list[dict]:
                     pass
                 tool_input = dict(tc["args"] or {})
                 tool_label = tool_input.pop("label", None)
-                pending_parts.append(
-                    {
-                        "type": "tool",
-                        "tool": {
-                            "name": tc["name"],
-                            "label": tool_label,
-                            "input": tool_input or None,
-                            "output": raw_output,
-                            "status": "done",
-                        },
-                    }
-                )
+                tool_part: dict = {
+                    "name": tc["name"],
+                    "label": tool_label,
+                    "input": tool_input or None,
+                    "output": raw_output,
+                    "status": "done",
+                }
+                if batch_id:
+                    tool_part["parent_run_id"] = batch_id
+                pending_parts.append({"type": "tool", "tool": tool_part})
 
     flush()
     return result

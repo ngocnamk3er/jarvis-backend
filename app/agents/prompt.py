@@ -35,6 +35,7 @@ If a task requires both research AND coding, read `web-research` AND the relevan
 
 ## Tool use discipline
 - Use the minimum number of tool calls needed to answer the question.
+- **Call tools in parallel whenever possible.** Multiple independent searches or fetches should be issued simultaneously, not one after another — parallel calls take the same time as a single call.
 - Never fetch the same URL twice in one conversation — if you already fetched a URL, use the content you received, even if it was incomplete.
 - Never call web_search more than twice on the same topic. If two searches haven't found what you need, stop and reason: who officially publishes this type of data? Fetch their site directly instead of searching again.
 - Once you have enough information to answer, stop calling tools and respond immediately.

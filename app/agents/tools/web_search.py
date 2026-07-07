@@ -7,11 +7,19 @@ from app.agents.messages import WebSearchMsg
 
 @tool
 async def web_search(query: str, label: str) -> str:
-    """Search the internet for current information.
-    Use a single, specific query. Call this tool at most once or twice per user request.
+"""Search the internet for current information.
+
+    When multiple independent topics need to be researched, call this tool
+    in parallel — one call per query — rather than sequentially. Parallel
+    calls complete in the same time as a single call.
+
+    Examples of when to call in parallel:
+    - "GDP of Vietnam AND GDP of Thailand" → two simultaneous calls
+    - Need data from multiple sources → call each query at the same time
+    - Different aspects of a topic → split into focused parallel queries
 
     Args:
-        query: Search query.
+        query: A single, specific search query.
         label: Brief human-readable description shown to the user.
     """
     client = AsyncTavilyClient(api_key=settings.TAVILY_API_KEY)

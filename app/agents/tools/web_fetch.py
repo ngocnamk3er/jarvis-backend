@@ -24,6 +24,10 @@ def _html_to_text(html: str) -> str:
 async def web_fetch(url: str, label: str) -> str:
     """Fetch the content of a web page and return it as markdown.
 
+    When multiple URLs need to be read, call this tool in parallel — one
+    call per URL — rather than sequentially. Parallel calls complete in
+    the same time as a single call.
+
     Args:
         url: URL to fetch.
         label: Brief human-readable description shown to the user.

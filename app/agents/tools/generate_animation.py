@@ -1,9 +1,14 @@
 import json
 from langchain_core.tools import tool
 
+from app.agents.tools.viz_validate import validate_html
+
+# Matches the sandbox flags animation-block.tsx sets on the real iframe.
+_ANIMATION_SANDBOX = "allow-scripts"
+
 
 @tool
-def generate_animation(html: str, label: str, title: str = "") -> str:
+async def generate_animation(html: str, label: str, title: str = "") -> str:
     """Create an interactive animation rendered directly in the chat window.
 
     Write a complete self-contained HTML page with embedded JS/CSS that produces
@@ -22,4 +27,7 @@ def generate_animation(html: str, label: str, title: str = "") -> str:
         html: Full HTML document (<html>…</html>) with all JS/CSS inline
         title: Short title shown above the animation (optional)
     """
+    error = await validate_html(html, sandbox=_ANIMATION_SANDBOX)
+    if error:
+        return f"Error: animation failed to run — {error}"
     return json.dumps({"__viz__": "html", "code": html, "title": title})

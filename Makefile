@@ -3,11 +3,14 @@ PYTHON := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 UVICORN := $(VENV)/bin/uvicorn
 
-.PHONY: install run dev shell build-sandbox migrate migration
+.PHONY: install install-browser run dev shell build-sandbox migrate migration
 
 install:
 	python3 -m venv $(VENV)
 	$(PIP) install -q -r requirements.txt
+
+install-browser:
+	$(PYTHON) -m playwright install chromium
 
 run:
 	$(UVICORN) app.main:app --host 0.0.0.0 --port 8000

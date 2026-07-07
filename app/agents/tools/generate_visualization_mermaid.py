@@ -1,9 +1,11 @@
 import json
 from langchain_core.tools import tool
 
+from app.agents.tools.viz_validate import validate_mermaid
+
 
 @tool
-def generate_visualization_mermaid(code: str, label: str, title: str = "") -> str:
+async def generate_visualization_mermaid(code: str, label: str, title: str = "") -> str:
     """Render a Mermaid diagram when the user needs a flow-based visual.
 
     Use this for anything flow-related: flowcharts, sequence diagrams, state
@@ -14,4 +16,7 @@ def generate_visualization_mermaid(code: str, label: str, title: str = "") -> st
         code: Valid Mermaid diagram syntax (e.g. "flowchart TD\\n  A --> B")
         title: Short title shown above the diagram (optional)
     """
+    error = await validate_mermaid(code)
+    if error:
+        return f"Error: invalid Mermaid syntax — {error}"
     return json.dumps({"__viz__": "mermaid", "code": code, "title": title})

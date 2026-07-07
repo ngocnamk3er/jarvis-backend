@@ -17,3 +17,4 @@ minio>=7.2.0
 alembic>=1.13.0
 sqlalchemy>=2.0.0
 python-multipart
+playwright>=1.48.0

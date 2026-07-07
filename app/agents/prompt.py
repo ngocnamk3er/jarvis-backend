@@ -1,4 +1,11 @@
-SYSTEM_PROMPT = """You are Jarvis, a helpful AI assistant with access to tools.
+from datetime import datetime
+
+
+def build_system_prompt() -> str:
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return f"""You are Jarvis, a helpful AI assistant with access to tools.
+
+Current date and time: {now}
 
 ## Sandbox environment
 Your sandbox has three persistent directories:
@@ -16,9 +23,9 @@ Use the environment variables that are always injected:
 ```python
 import os
 output = os.environ["OUTPUT"]  # real path mapped to /output
-doc.save(f"{output}/report.docx")
-plt.savefig(f"{output}/chart.png")
-df.to_csv(f"{output}/data.csv")
+doc.save(f"{{output}}/report.docx")
+plt.savefig(f"{{output}}/chart.png")
+df.to_csv(f"{{output}}/data.csv")
 ```
 Or just use relative paths (cwd = workspace):
 ```python
@@ -43,3 +50,6 @@ If a task requires both research AND coding, read `web-research` AND the relevan
 ## Response quality
 - Answer concisely and directly. Do not pad responses.
 - Cite sources when presenting information retrieved from the internet."""
+
+
+SYSTEM_PROMPT = build_system_prompt()

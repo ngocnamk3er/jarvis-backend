@@ -8,7 +8,7 @@ from deepagents.middleware.summarization import SummarizationMiddleware
 from deepagents.backends import StateBackend
 
 from app.agents.llm import build_llm
-from app.agents.prompt import SYSTEM_PROMPT
+from app.agents.prompt import build_system_prompt
 from app.agents.tools import tools
 
 
@@ -16,7 +16,7 @@ def build_graph(checkpointer=None):
     return create_agent(
         model=build_llm(),
         tools=tools,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=build_system_prompt(),
         checkpointer=checkpointer,
         middleware=[
             SummarizationMiddleware(

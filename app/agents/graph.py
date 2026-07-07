@@ -31,5 +31,9 @@ def build_graph(checkpointer=None):
                 tool_name="web_search",
                 run_limit=3,
             ),
+            ToolCallLimitMiddleware(
+                tool_name="web_fetch",
+                run_limit=3,
+            ),
         ],
     )

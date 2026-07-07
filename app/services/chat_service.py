@@ -95,7 +95,15 @@ class ToolEndEventHandler:
                 return [{"type": "viz", "format": data["__viz__"], "code": data["code"], "title": data.get("title", "")}]
         except Exception:
             pass
-        return [{"type": "tool_end", "name": event["name"], "output": output, "run_id": event.get("run_id", "")}]
+        # Viz tools suppress tool_start/tool_chunk, so FE has no badge yet.
+        # Emit a synthetic tool_start first so FE can show the error output.
+        events: list[dict] = []
+        if event["name"] in VIZ_TOOLS:
+            raw_input = dict(event["data"].get("input") or {})
+            label = raw_input.pop("label", None)
+            events.append({"type": "tool_start", "name": event["name"], "label": label, "input": raw_input or None, "run_id": event.get("run_id", "")})
+        events.append({"type": "tool_end", "name": event["name"], "output": output, "run_id": event.get("run_id", "")})
+        return events
 
 
 # ---------------------------------------------------------------------------

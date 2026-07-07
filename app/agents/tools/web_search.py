@@ -7,7 +7,7 @@ from app.agents.messages import WebSearchMsg
 
 @tool
 async def web_search(query: str, label: str) -> str:
-"""Search the internet for current information.
+    """Search the internet for current information.
 
     When multiple independent topics need to be researched, call this tool
     in parallel — one call per query — rather than sequentially. Parallel

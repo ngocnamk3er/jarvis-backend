@@ -25,6 +25,13 @@ def bash(command: str, label: str, config: RunnableConfig) -> str:
         bash("cp /upload/data.csv /workspace/data.csv")
         bash("wc -l /workspace/*.csv")
 
+    IMPORTANT — package installation timeouts:
+        When apt-get or pip install times out, the process continues running
+        in the background inside the container. Do NOT immediately retry with
+        a different package name — you will hit a dpkg/pip lock conflict.
+        Instead, wait then check: `which java`, `dpkg -l | grep openjdk`,
+        `pip show pandas`, etc. Only retry if the package is truly absent.
+
     Args:
         command: Bash command to execute.
         label: Brief human-readable description shown to the user (e.g. "Running fibonacci script", "Installing pandas").
@@ -36,7 +43,12 @@ def bash(command: str, label: str, config: RunnableConfig) -> str:
     except FileNotFoundError:
         return "Error: Docker is not available on this system."
     except subprocess.TimeoutExpired:
-        return "Error: command timed out (60s limit)."
+        return (
+            "Error: command timed out (300s limit). "
+            "If this was a package install (apt-get/pip), the process may still be running "
+            "in the background. Check first with 'which <binary>' or 'dpkg -l | grep <pkg>' "
+            "before retrying — do NOT retry with a different package name immediately."
+        )
 
     output = ""
     if result.stdout.strip():

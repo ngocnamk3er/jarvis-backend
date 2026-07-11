@@ -197,7 +197,7 @@ def ensure_container_running(thread_id: str) -> str:
 
 
 def exec_bash_in_sandbox(
-    conversation_id: str, command: str, timeout: int = 60
+    conversation_id: str, command: str, timeout: int = 300
 ) -> subprocess.CompletedProcess:
     """Execute a bash command in the per-conversation container."""
     _prepare_host_dirs(conversation_id)

@@ -1,9 +1,8 @@
-"""Render-and-check validation for the generate_* viz tools.
+"""Render-and-check validation for generate_visualization_svg.
 
-Mirrors what the frontend actually does with each artifact (same Mermaid
-build, same sanitization, same iframe sandbox flags) inside a headless
-Chromium page, so the agent can catch a broken diagram/app/animation and
-retry before it ever reaches the user.
+Mirrors what the frontend actually does with the SVG (same sanitization,
+same iframe sandbox flags) inside a headless Chromium page, so the agent
+can catch a broken SVG and retry before it ever reaches the user.
 
 Uses Playwright's *sync* API inside a worker thread (via asyncio.to_thread).
 On Windows, uvicorn's --reload forces a SelectorEventLoop for psycopg
@@ -14,13 +13,8 @@ caller's event loop at all.
 
 import asyncio
 import re
-from pathlib import Path
 
 from playwright.sync_api import sync_playwright
-
-_MERMAID_JS = (Path(__file__).parent.parent.parent / "static" / "vendor" / "mermaid.min.js").read_text(
-    encoding="utf-8"
-)
 
 _RENDER_TIMEOUT_MS = 8000
 
@@ -37,30 +31,6 @@ _HTML_ENTITIES = {
 
 def _sanitize_svg_entities(svg: str) -> str:
     return re.sub(r"&[a-zA-Z]+;", lambda m: _HTML_ENTITIES.get(m.group(0), m.group(0)), svg)
-
-
-def _validate_mermaid_sync(code: str) -> str | None:
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        try:
-            page = browser.new_page()
-            page.set_default_timeout(_RENDER_TIMEOUT_MS)
-            page.set_content(
-                f"<!DOCTYPE html><html><head><script>{_MERMAID_JS}</script></head><body></body></html>"
-            )
-            return page.evaluate(
-                """async (code) => {
-                    try {
-                        await window.mermaid.parse(code);
-                        return null;
-                    } catch (e) {
-                        return String((e && e.message) || e);
-                    }
-                }""",
-                code,
-            )
-        finally:
-            browser.close()
 
 
 def _validate_svg_sync(code: str) -> str | None:
@@ -92,7 +62,11 @@ def _validate_svg_sync(code: str) -> str | None:
             browser.close()
 
 
-def _validate_html_sync(html: str, sandbox: str, wait_ms: int) -> str | None:
+def _validate_svg_script_sync(svg: str, sandbox: str, wait_ms: int) -> str | None:
+    # Must navigate the iframe's `src` to the SVG as its own document (not
+    # `srcdoc` with an HTML wrapper) — a sandboxed HTML-wrapped SVG runs its
+    # script and builds the DOM correctly but silently fails to paint. This
+    # mirrors the fix in svg-diagram.tsx.
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         try:
@@ -103,13 +77,13 @@ def _validate_html_sync(html: str, sandbox: str, wait_ms: int) -> str | None:
             page.on("console", lambda msg: errors.append(msg.text) if msg.type == "error" else None)
             page.goto("about:blank")
             page.evaluate(
-                """({html, sandbox}) => {
+                """({svg, sandbox}) => {
                     const iframe = document.createElement('iframe');
                     iframe.sandbox = sandbox;
-                    iframe.srcdoc = html;
+                    iframe.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
                     document.body.appendChild(iframe);
                 }""",
-                {"html": html, "sandbox": sandbox},
+                {"svg": svg, "sandbox": sandbox},
             )
             page.wait_for_timeout(wait_ms)
             if errors:
@@ -119,29 +93,19 @@ def _validate_html_sync(html: str, sandbox: str, wait_ms: int) -> str | None:
             browser.close()
 
 
-async def validate_mermaid(code: str) -> str | None:
-    """Return an error message if the Mermaid source fails to parse, else None."""
-    try:
-        return await asyncio.to_thread(_validate_mermaid_sync, code)
-    except Exception as e:
-        return f"Could not validate Mermaid diagram: {e}"
-
-
-async def validate_svg(code: str) -> str | None:
-    """Return an error message if the SVG fails to render as an image, else None."""
+async def validate_svg(code: str, sandbox: str) -> str | None:
+    """Return an error message if the SVG fails to render as an image, or if it
+    throws a runtime JS error inside the sandboxed iframe the frontend uses to
+    render SVGs (which allows CSS :hover, <a>, SMIL <animate>, and inline
+    <script> event handlers), else None."""
     trimmed = code.strip()
     if not trimmed.startswith("<svg"):
         return "Invalid SVG: content must start with '<svg'."
+    sanitized = _sanitize_svg_entities(trimmed)
     try:
-        return await asyncio.to_thread(_validate_svg_sync, _sanitize_svg_entities(trimmed))
+        structural_error = await asyncio.to_thread(_validate_svg_sync, sanitized)
+        if structural_error:
+            return structural_error
+        return await asyncio.to_thread(_validate_svg_script_sync, sanitized, sandbox, 1200)
     except Exception as e:
         return f"Could not validate SVG: {e}"
-
-
-async def validate_html(html: str, sandbox: str, wait_ms: int = 1200) -> str | None:
-    """Load `html` inside a sandboxed iframe like the frontend does, and report
-    any uncaught JS exception or console error seen within `wait_ms`."""
-    try:
-        return await asyncio.to_thread(_validate_html_sync, html, sandbox, wait_ms)
-    except Exception as e:
-        return f"Could not validate rendering: {e}"

@@ -157,6 +157,20 @@ class ChatService:
         if chunk.content:
             events.extend(parser.feed(chunk.content))
 
+        # OpenRouter reports usage on a final, contentless chunk per LLM call.
+        # A single agent turn may call the model multiple times (tool round-trips),
+        # so the frontend accumulates these into a running total for the message.
+        usage = chunk.usage_metadata
+        if usage:
+            events.append(
+                {
+                    "type": "usage",
+                    "input_tokens": usage.get("input_tokens", 0) or 0,
+                    "output_tokens": usage.get("output_tokens", 0) or 0,
+                    "total_tokens": usage.get("total_tokens", 0) or 0,
+                }
+            )
+
         # Tool call chunks — suppress for viz tools (they render as viz blocks, not badges)
         for tc in getattr(chunk, "tool_call_chunks", None) or []:
             name = tc.get("name") or ""

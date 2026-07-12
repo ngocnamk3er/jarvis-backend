@@ -66,4 +66,7 @@ def build_llm(model: str | None = None) -> ThinkingChatOpenAI:
         base_url=settings.OPENROUTER_BASE_URL,
         streaming=True,
         temperature=0,
+        # OpenRouter only reports token usage on the final stream chunk when asked;
+        # ChatOpenAI auto-enables this for api.openai.com but not custom base URLs.
+        stream_usage=True,
     )

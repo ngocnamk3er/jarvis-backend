@@ -18,16 +18,16 @@ def serialize_messages(messages: list) -> list[dict]:
 
     result: list[dict] = []
     pending_parts: list[dict] = []
-    pending_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    pending_usage_calls: list[dict] = []
 
     def flush():
         if pending_parts:
             entry: dict = {"role": "assistant", "parts": list(pending_parts)}
-            if pending_usage["total_tokens"]:
-                entry["usage"] = dict(pending_usage)
+            if pending_usage_calls:
+                entry["usage"] = list(pending_usage_calls)
             result.append(entry)
             pending_parts.clear()
-        pending_usage.update(input_tokens=0, output_tokens=0, total_tokens=0)
+        pending_usage_calls.clear()
 
     for msg in messages:
         if isinstance(msg, HumanMessage):
@@ -53,9 +53,13 @@ def serialize_messages(messages: list) -> list[dict]:
                 pending_parts.append({"type": "text", "content": str(msg.content)})
             usage = msg.usage_metadata
             if usage:
-                pending_usage["input_tokens"] += usage.get("input_tokens", 0) or 0
-                pending_usage["output_tokens"] += usage.get("output_tokens", 0) or 0
-                pending_usage["total_tokens"] += usage.get("total_tokens", 0) or 0
+                pending_usage_calls.append(
+                    {
+                        "input_tokens": usage.get("input_tokens", 0) or 0,
+                        "output_tokens": usage.get("output_tokens", 0) or 0,
+                        "total_tokens": usage.get("total_tokens", 0) or 0,
+                    }
+                )
             tool_calls = msg.tool_calls or []
             # Tools in the same AIMessage were called in parallel — share a batch key
             batch_id = msg.id if len(tool_calls) > 1 else None

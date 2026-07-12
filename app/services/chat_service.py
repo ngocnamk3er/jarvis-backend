@@ -159,7 +159,9 @@ class ChatService:
 
         # OpenRouter reports usage on a final, contentless chunk per LLM call.
         # A single agent turn may call the model multiple times (tool round-trips),
-        # so the frontend accumulates these into a running total for the message.
+        # so the frontend collects one usage entry per call rather than summing —
+        # each call's input_tokens already includes all prior calls' context, so
+        # summing would double/triple-count the repeated prefix.
         usage = chunk.usage_metadata
         if usage:
             events.append(

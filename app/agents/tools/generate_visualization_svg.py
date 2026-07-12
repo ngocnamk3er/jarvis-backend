@@ -21,6 +21,13 @@ async def generate_visualization_svg(code: str, label: str, title: str = "") -> 
     `<script>` with event handlers (onclick, onmouseover, etc.) all work.
     Keep everything self-contained — no external URLs.
 
+    On success this already renders as a visual block in the chat, so you
+    don't need to repeat the code to show it to the user. If you do include
+    the SVG source in your reply (e.g. because the user asked to see or copy
+    it), always wrap it in a fenced code block with the `svg` language tag
+    (```svg ... ```) — raw unfenced markup renders as broken/ugly text since
+    the chat view doesn't render raw inline HTML.
+
     Args:
         code: Complete SVG markup starting with <svg ...> (include viewBox)
         title: Short title shown above the graphic (optional)

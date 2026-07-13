@@ -19,7 +19,7 @@ async def create_conversation(body: ConversationCreate):
 
 @router.get("/{conversation_id}/messages")
 async def get_messages(conversation_id: str, req: Request):
-    return await conversation_service.get_messages(req.app.state.graph, conversation_id)
+    return await conversation_service.get_messages(req.app.state.graph, conversation_id, get_pool())
 
 
 @router.patch("/{conversation_id}/title")

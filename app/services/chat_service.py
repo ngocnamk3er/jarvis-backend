@@ -2,6 +2,9 @@ import json
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
+from app.db import repository
+from app.db.connection import get_pool
+
 # ---------------------------------------------------------------------------
 # Thinking parser — splits <think>…</think> out of the content stream
 # ---------------------------------------------------------------------------
@@ -159,6 +162,21 @@ class ChatService:
         self._tool_end = ToolEndEventHandler()
 
     @staticmethod
+    def _task_tool_call_id(event: dict) -> str | None:
+        """Extract the `task` call's own tool_call_id from its on_tool_end event.
+
+        This is the stable id (matches ToolMessage.tool_call_id in the persisted
+        state) used to key a saved subagent trace — unlike run_id, which is a
+        fresh UUID every time the graph replays/reloads.
+        """
+        raw = event["data"].get("output")
+        if isinstance(raw, Command):
+            msgs = (raw.update or {}).get("messages") or []
+            if msgs and hasattr(msgs[0], "tool_call_id"):
+                return msgs[0].tool_call_id
+        return None
+
+    @staticmethod
     def _usage_event(chunk) -> dict | None:
         # OpenRouter reports usage on a final, contentless chunk per LLM call.
         # A single agent turn may call the model multiple times (tool round-trips,
@@ -223,6 +241,7 @@ class ChatService:
         parser = ThinkingParser()
         viz_indexes: set[int] = set()
         hitl_lines: list[str] = []
+        thread_id = config["configurable"]["thread_id"]
         # Maps every run_id inside a `task` subagent's execution tree back to
         # the run_id of the specific `task` call it descends from — lets the
         # UI nest each subagent's own tool calls (web_search, web_fetch, ...)
@@ -235,11 +254,17 @@ class ChatService:
         # subagents stream concurrently. Token usage is still surfaced either
         # way, for accurate cost accounting.
         subagent_task_root: dict[str, str] = {}
+        # Accumulates each task's nested tool_start/tool_end payloads, saved to
+        # Postgres once that task finishes (keyed by its tool_call_id) purely
+        # so the user can still see them after a reload — never read back into
+        # the model's own context on later turns.
+        nested_events_by_task: dict[str, list[dict]] = {}
         try:
             async for event in graph.astream_events(graph_input, config=config, version="v2"):
                 run_id = event.get("run_id", "")
                 parent_ids = event.get("parent_ids") or []
                 is_task_start = event["event"] == "on_tool_start" and event.get("name") == "task"
+                is_task_end = event["event"] == "on_tool_end" and event.get("name") == "task"
                 task_run_id = next((subagent_task_root[pid] for pid in parent_ids if pid in subagent_task_root), None)
 
                 if is_task_start:
@@ -257,8 +282,17 @@ class ChatService:
                         results = self._handle_token(event, parser, viz_indexes) or None
                 elif event["event"] == "on_tool_start":
                     results = self._tool_start.handle(event, task_run_id=task_run_id)
+                    if task_run_id:
+                        nested_events_by_task.setdefault(task_run_id, []).extend(results)
                 elif event["event"] == "on_tool_end":
                     results = self._tool_end.handle(event, task_run_id=task_run_id)
+                    if task_run_id:
+                        nested_events_by_task.setdefault(task_run_id, []).extend(results)
+                    elif is_task_end:
+                        trace = nested_events_by_task.get(run_id)
+                        tool_call_id = self._task_tool_call_id(event)
+                        if trace and tool_call_id:
+                            await repository.save_subagent_trace(get_pool(), thread_id, tool_call_id, trace)
 
                 if results:
                     for data in results:

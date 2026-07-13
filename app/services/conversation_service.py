@@ -9,7 +9,39 @@ from app.agents.tools.sandbox_manager import stop_container
 # ── serialization ─────────────────────────────────────────────────────────────
 
 
-def serialize_messages(messages: list) -> list[dict]:
+def _replay_subagent_trace(trace: list[dict], task_tool_call_id: str) -> list[dict]:
+    """Reconstruct tool parts from a saved subagent trace (the raw tool_start/
+    tool_end SSE payloads, in original stream order) so they render nested
+    under the `task` badge after reload, same as they did live."""
+    parts: list[dict] = []
+    by_run_id: dict[str, dict] = {}
+    batch_id = 0
+    prev_type = None
+    for ev in trace:
+        if ev["type"] == "tool_start":
+            if prev_type != "tool_start":
+                batch_id += 1
+            tool: dict = {
+                "name": ev["name"],
+                "label": ev.get("label"),
+                "input": ev.get("input"),
+                "status": "done",
+                "run_id": ev.get("run_id"),
+                "task_run_id": task_tool_call_id,
+                "parent_run_id": f"sub-{task_tool_call_id}-{batch_id}",
+            }
+            by_run_id[ev.get("run_id")] = tool
+            parts.append({"type": "tool", "tool": tool})
+        elif ev["type"] == "tool_end":
+            tool = by_run_id.get(ev.get("run_id"))
+            if tool:
+                tool["output"] = ev.get("output")
+        prev_type = ev["type"]
+    return parts
+
+
+def serialize_messages(messages: list, subagent_traces: dict[str, list[dict]] | None = None) -> list[dict]:
+    subagent_traces = subagent_traces or {}
     tool_outputs: dict[str, str] = {
         msg.tool_call_id: str(msg.content)
         for msg in messages
@@ -86,6 +118,11 @@ def serialize_messages(messages: list) -> list[dict]:
                     tool_part["parent_run_id"] = batch_id
                 pending_parts.append({"type": "tool", "tool": tool_part})
 
+                trace = subagent_traces.get(tc["id"])
+                if trace:
+                    tool_part["run_id"] = tc["id"]
+                    pending_parts.extend(_replay_subagent_trace(trace, tc["id"]))
+
     flush()
     return result
 
@@ -115,11 +152,12 @@ async def update_title(pool, conversation_id: str, title: str):
     await repository.update_conversation_title(pool, conversation_id, title)
 
 
-async def get_messages(graph, conversation_id: str) -> dict:
+async def get_messages(graph, conversation_id: str, pool) -> dict:
     config = {"configurable": {"thread_id": conversation_id}}
     state = await graph.aget_state(config)
     messages = state.values.get("messages", []) if state.values else []
+    subagent_traces = await repository.get_subagent_traces(pool, conversation_id)
     return {
-        "messages": serialize_messages(messages),
+        "messages": serialize_messages(messages, subagent_traces),
         "is_pending": bool(state.next),
     }

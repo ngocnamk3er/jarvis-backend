@@ -5,11 +5,13 @@ from langchain.agents.middleware import (
     ToolCallLimitMiddleware,
 )
 from deepagents.middleware.summarization import SummarizationMiddleware
+from deepagents.middleware.subagents import SubAgentMiddleware
 from deepagents.backends import StateBackend
 
 from app.agents.llm import build_llm
 from app.agents.prompt import build_system_prompt
 from app.agents.tools import tools
+from app.agents.subagents import RESEARCH_SUBAGENT
 
 
 def build_graph(checkpointer=None):
@@ -39,6 +41,10 @@ def build_graph(checkpointer=None):
                 tool_name="web_fetch",
                 run_limit=50,
                 exit_behavior="end",
+            ),
+            SubAgentMiddleware(
+                backend=StateBackend,
+                subagents=[RESEARCH_SUBAGENT],
             ),
         ],
     )

@@ -75,20 +75,30 @@ HIDDEN_TOOLS = {"write_todos"}
 
 
 class ToolStartEventHandler:
-    def handle(self, event: dict) -> list[dict]:
+    def handle(self, event: dict, task_run_id: str | None = None) -> list[dict]:
         if event["name"] in VIZ_TOOLS or event["name"] in HIDDEN_TOOLS:
             return []
         raw_input = dict(event["data"].get("input") or {})
         label = raw_input.pop("label", None)
-        return [{"type": "tool_start", "name": event["name"], "label": label, "input": raw_input or None, "run_id": event.get("run_id", "")}]
+        result = {"type": "tool_start", "name": event["name"], "label": label, "input": raw_input or None, "run_id": event.get("run_id", "")}
+        if task_run_id:
+            result["task_run_id"] = task_run_id
+        return [result]
 
 
 class ToolEndEventHandler:
-    def handle(self, event: dict) -> list[dict]:
+    def handle(self, event: dict, task_run_id: str | None = None) -> list[dict]:
         if event["name"] in HIDDEN_TOOLS:
             return []
         raw = event["data"].get("output")
-        output = raw.content if hasattr(raw, "content") else str(raw)
+        if isinstance(raw, Command):
+            # Tools that return a Command (e.g. the `task` subagent tool) wrap
+            # their result in update={"messages": [ToolMessage(...)]} rather
+            # than returning content directly.
+            msgs = (raw.update or {}).get("messages") or []
+            output = msgs[0].content if msgs and hasattr(msgs[0], "content") else str(raw)
+        else:
+            output = raw.content if hasattr(raw, "content") else str(raw)
         try:
             data = json.loads(output)
             if "__viz__" in data:
@@ -101,8 +111,14 @@ class ToolEndEventHandler:
         if event["name"] in VIZ_TOOLS:
             raw_input = dict(event["data"].get("input") or {})
             label = raw_input.pop("label", None)
-            events.append({"type": "tool_start", "name": event["name"], "label": label, "input": raw_input or None, "run_id": event.get("run_id", "")})
-        events.append({"type": "tool_end", "name": event["name"], "output": output, "run_id": event.get("run_id", "")})
+            start: dict = {"type": "tool_start", "name": event["name"], "label": label, "input": raw_input or None, "run_id": event.get("run_id", "")}
+            if task_run_id:
+                start["task_run_id"] = task_run_id
+            events.append(start)
+        end: dict = {"type": "tool_end", "name": event["name"], "output": output, "run_id": event.get("run_id", "")}
+        if task_run_id:
+            end["task_run_id"] = task_run_id
+        events.append(end)
         return events
 
 
@@ -142,6 +158,24 @@ class ChatService:
         self._tool_start = ToolStartEventHandler()
         self._tool_end = ToolEndEventHandler()
 
+    @staticmethod
+    def _usage_event(chunk) -> dict | None:
+        # OpenRouter reports usage on a final, contentless chunk per LLM call.
+        # A single agent turn may call the model multiple times (tool round-trips,
+        # including hidden subagent calls), so the frontend collects one usage
+        # entry per call rather than summing — each call's input_tokens already
+        # includes all prior calls' context, so summing would double/triple-count
+        # the repeated prefix.
+        usage = chunk.usage_metadata
+        if not usage:
+            return None
+        return {
+            "type": "usage",
+            "input_tokens": usage.get("input_tokens", 0) or 0,
+            "output_tokens": usage.get("output_tokens", 0) or 0,
+            "total_tokens": usage.get("total_tokens", 0) or 0,
+        }
+
     def _handle_token(self, event: dict, parser: ThinkingParser, viz_indexes: set[int]) -> list[dict]:
         chunk = event["data"]["chunk"]
         events: list[dict] = []
@@ -157,21 +191,9 @@ class ChatService:
         if chunk.content:
             events.extend(parser.feed(chunk.content))
 
-        # OpenRouter reports usage on a final, contentless chunk per LLM call.
-        # A single agent turn may call the model multiple times (tool round-trips),
-        # so the frontend collects one usage entry per call rather than summing —
-        # each call's input_tokens already includes all prior calls' context, so
-        # summing would double/triple-count the repeated prefix.
-        usage = chunk.usage_metadata
-        if usage:
-            events.append(
-                {
-                    "type": "usage",
-                    "input_tokens": usage.get("input_tokens", 0) or 0,
-                    "output_tokens": usage.get("output_tokens", 0) or 0,
-                    "total_tokens": usage.get("total_tokens", 0) or 0,
-                }
-            )
+        usage_event = self._usage_event(chunk)
+        if usage_event:
+            events.append(usage_event)
 
         # Tool call chunks — suppress for viz tools (they render as viz blocks, not badges)
         for tc in getattr(chunk, "tool_call_chunks", None) or []:
@@ -201,16 +223,42 @@ class ChatService:
         parser = ThinkingParser()
         viz_indexes: set[int] = set()
         hitl_lines: list[str] = []
+        # Maps every run_id inside a `task` subagent's execution tree back to
+        # the run_id of the specific `task` call it descends from — lets the
+        # UI nest each subagent's own tool calls (web_search, web_fetch, ...)
+        # under the right "Delegating to sub-agent" badge instead of showing
+        # them as flat, unrelated rows. Those tool calls are shown as-is —
+        # they're complete, atomic events, safe to stream even with several
+        # subagents running in parallel. Their raw model text/thinking tokens
+        # are NOT shown: those arrive as many small deltas, and interleave
+        # character-by-character into unreadable garbled text when multiple
+        # subagents stream concurrently. Token usage is still surfaced either
+        # way, for accurate cost accounting.
+        subagent_task_root: dict[str, str] = {}
         try:
             async for event in graph.astream_events(graph_input, config=config, version="v2"):
+                run_id = event.get("run_id", "")
+                parent_ids = event.get("parent_ids") or []
+                is_task_start = event["event"] == "on_tool_start" and event.get("name") == "task"
+                task_run_id = next((subagent_task_root[pid] for pid in parent_ids if pid in subagent_task_root), None)
+
+                if is_task_start:
+                    subagent_task_root[run_id] = run_id
+                elif task_run_id:
+                    subagent_task_root[run_id] = task_run_id
+
                 results: list[dict] | None = None
 
                 if event["event"] == "on_chat_model_stream":
-                    results = self._handle_token(event, parser, viz_indexes) or None
+                    if task_run_id:
+                        usage_event = self._usage_event(event["data"]["chunk"])
+                        results = [usage_event] if usage_event else None
+                    else:
+                        results = self._handle_token(event, parser, viz_indexes) or None
                 elif event["event"] == "on_tool_start":
-                    results = self._tool_start.handle(event)
+                    results = self._tool_start.handle(event, task_run_id=task_run_id)
                 elif event["event"] == "on_tool_end":
-                    results = self._tool_end.handle(event)
+                    results = self._tool_end.handle(event, task_run_id=task_run_id)
 
                 if results:
                     for data in results:

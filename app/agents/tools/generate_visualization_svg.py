@@ -30,6 +30,7 @@ async def generate_visualization_svg(code: str, label: str, title: str = "") -> 
 
     Args:
         code: Complete SVG markup starting with <svg ...> (include viewBox)
+        label: Brief human-readable description shown to the user (e.g. "Drawing revenue chart").
         title: Short title shown above the graphic (optional)
     """
     error = await validate_svg(code, sandbox=_SVG_SANDBOX)

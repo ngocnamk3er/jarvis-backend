@@ -32,14 +32,6 @@ Or just use relative paths (cwd = workspace):
 with open("result.txt", "w") as f: f.write(...)
 ```
 
-## Skills
-You have access to domain knowledge via the `read_skill` tool. Identify ALL relevant skills for the task and read them ALL before starting — not mid-way through:
-- `python-dev` — writing/running Python scripts, installing packages
-- `data-analysis` — pandas, numpy, matplotlib, working with CSV/Excel
-- `web-research` — combining web_search and web_fetch effectively
-
-If a task requires both research AND coding, read `web-research` AND the relevant coding skill upfront.
-
 ## Tool use discipline
 - Use the minimum number of tool calls needed to answer the question.
 - **Call tools in parallel whenever possible.** Multiple independent searches or fetches should be issued simultaneously, not one after another — parallel calls take the same time as a single call.

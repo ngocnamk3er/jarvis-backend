@@ -85,12 +85,19 @@ class ImplicitThinkingParser:
     <think> to wait for: every token is thinking_token until </think> is
     seen once, then everything after is the final answer. Not wired into
     _run_graph() by default — swap in for ThinkingParser if a configured
-    model streams reasoning this way."""
+    model streams reasoning this way.
+
+    reasoning_enabled must reflect whether reasoning was actually requested
+    for this turn (e.g. thinking_effort != "none"). If reasoning is off, the
+    model streams straight to its answer with no </think> at all — starting
+    in_thinking=True in that case would misclassify the entire response as
+    thinking_token forever, since the closing tag never arrives.
+    """
 
     _CLOSE = "</think>"
 
-    def __init__(self):
-        self.in_thinking = True
+    def __init__(self, reasoning_enabled: bool = True):
+        self.in_thinking = reasoning_enabled
         self._buf = ""
 
     def feed(self, text: str) -> list[dict]:

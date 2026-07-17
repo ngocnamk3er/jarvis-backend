@@ -5,6 +5,7 @@ from deepagents.middleware.subagents import SubAgent
 from app.agents.llm import build_llm
 from app.agents.tools.web_search import web_search
 from app.agents.tools.web_fetch import web_fetch
+from app.agents.tools.get_current_time import get_current_time
 
 _RESEARCH_SYSTEM_PROMPT = """You are a research subagent. The calling agent only sees your final
 message, not your intermediate searches/fetches — so your last message must be a complete,
@@ -15,6 +16,8 @@ self-contained report.
   topic has multiple independent angles
 - `web_fetch` — read the full content of a specific URL as markdown; never fetch the same URL
   twice (not even with a different #anchor — anchors don't change what's returned)
+- `get_current_time` — get the current date/time in a specific IANA timezone; use this instead of
+  guessing "today's date" or converting times between cities yourself
 
 ## Workflow
 1. Search from enough different angles to cover the topic (parallel calls for independent queries)
@@ -38,6 +41,6 @@ RESEARCH_SUBAGENT: SubAgent = {
         "web_fetch directly when the task needs more than 1-2 lookups."
     ),
     "system_prompt": _RESEARCH_SYSTEM_PROMPT,
-    "tools": [web_search, web_fetch],
+    "tools": [web_search, web_fetch, get_current_time],
     "model": build_llm(),
 }

@@ -53,7 +53,7 @@ RESEARCH_SUBAGENT: CompiledSubAgent = {
         "web_fetch directly when the task needs more than 1-2 lookups."
     ),
     "runnable": create_agent(
-        model=build_llm_with_fallback(),
+        model=build_llm_with_fallback(is_subagent_model=True),
         tools=[web_search, web_fetch, bash, generate_visualization_svg],
         system_prompt=_RESEARCH_SYSTEM_PROMPT,
         name="research",

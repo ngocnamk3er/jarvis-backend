@@ -27,6 +27,11 @@ class ChatRequest(BaseModel):
     content: str
     thinking_effort: Literal["low", "medium", "high", "xhigh"] = "high"
     model: str = DEFAULT_MODEL
+    # None means "inherit the main model" — LangGraph merges the root run's
+    # configurable into the research subagent's own config automatically, so
+    # the subagent already follows `model` above unless this is set to
+    # something different.
+    subagent_model: str | None = None
 
 
 class ResumeRequest(BaseModel):
@@ -37,3 +42,4 @@ class ResumeRequest(BaseModel):
     # qwen3.5-9b, once a HITL approval triggered /chat/resume, kept running
     # (and wrote the final synthesized answer) on deepseek-v4-flash instead.
     model: str = DEFAULT_MODEL
+    subagent_model: str | None = None

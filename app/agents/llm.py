@@ -33,6 +33,16 @@ class ThinkingChatOpenAI(ChatOpenAI):
     # actually diversifying.
     honor_model_override: bool = True
 
+    # True for the research subagent's own model (see subagents.py). Reads
+    # "subagent_model" from configurable instead of "model" — LangGraph's
+    # ensure_config merges the root run's configurable into the subagent's
+    # own config (verified live), so without a distinct key the subagent
+    # would always just inherit whatever model the main agent is using,
+    # with no way to pick a different one for it specifically. Falls back to
+    # "model" when "subagent_model" isn't set, so subagents still inherit
+    # the main model by default until the user explicitly overrides it.
+    is_subagent_model: bool = False
+
     def _get_request_payload(self, input_, *, stop=None, **kwargs):
         try:
             from langgraph.config import get_config
@@ -44,7 +54,10 @@ class ThinkingChatOpenAI(ChatOpenAI):
         if "extra_body" not in kwargs:
             kwargs["extra_body"] = {"reasoning": {"effort": effort, "exclude": False}}
 
-        model_override = cfg.get("model")
+        if self.is_subagent_model:
+            model_override = cfg.get("subagent_model") or cfg.get("model")
+        else:
+            model_override = cfg.get("model")
         if model_override and self.honor_model_override and "model" not in kwargs:
             kwargs["model"] = model_override
 
@@ -72,7 +85,9 @@ class ThinkingChatOpenAI(ChatOpenAI):
         return gen_chunk
 
 
-def build_llm(model: str | None = None, *, honor_model_override: bool = True) -> ThinkingChatOpenAI:
+def build_llm(
+    model: str | None = None, *, honor_model_override: bool = True, is_subagent_model: bool = False
+) -> ThinkingChatOpenAI:
     return ThinkingChatOpenAI(
         model=model or settings.OPENROUTER_MODEL,
         api_key=settings.OPENROUTER_API_KEY,
@@ -83,10 +98,11 @@ def build_llm(model: str | None = None, *, honor_model_override: bool = True) ->
         # ChatOpenAI auto-enables this for api.openai.com but not custom base URLs.
         stream_usage=True,
         honor_model_override=honor_model_override,
+        is_subagent_model=is_subagent_model,
     )
 
 
-def build_llm_with_fallback(model: str | None = None):
+def build_llm_with_fallback(model: str | None = None, *, is_subagent_model: bool = False):
     """build_llm(), plus a LangChain .with_fallbacks() chain: if the primary
     model errors (rate-limited, down, etc.), retries on the next model in
     OPENROUTER_FALLBACK_MODELS, in order, within the same call.
@@ -99,8 +115,10 @@ def build_llm_with_fallback(model: str | None = None):
     provider-prefixed strings (verified: raises AttributeError: 'count').
     """
     primary_id = model or settings.OPENROUTER_MODEL
-    primary = build_llm(model)
+    primary = build_llm(model, is_subagent_model=is_subagent_model)
     fallbacks = [
-        build_llm(m, honor_model_override=False) for m in _FALLBACK_MODELS if m != primary_id
+        build_llm(m, honor_model_override=False, is_subagent_model=is_subagent_model)
+        for m in _FALLBACK_MODELS
+        if m != primary_id
     ]
     return primary.with_fallbacks(fallbacks) if fallbacks else primary

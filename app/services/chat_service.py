@@ -213,9 +213,19 @@ class ToolEndEventHandler:
 # ---------------------------------------------------------------------------
 
 
-def _make_config(thread_id: str, thinking_effort: str = "high", model: str | None = None) -> dict:
+def _make_config(
+    thread_id: str,
+    thinking_effort: str = "high",
+    model: str | None = None,
+    subagent_model: str | None = None,
+) -> dict:
     return {
-        "configurable": {"thread_id": thread_id, "thinking_effort": thinking_effort, "model": model},
+        "configurable": {
+            "thread_id": thread_id,
+            "thinking_effort": thinking_effort,
+            "model": model,
+            "subagent_model": subagent_model,
+        },
         "recursion_limit": 200,
     }
 
@@ -392,15 +402,30 @@ class ChatService:
             yield f"data: {line}\n\n"
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
-    async def stream(self, thread_id: str, content: str, graph, thinking_effort: str = "high", model: str | None = None):
-        config = _make_config(thread_id, thinking_effort, model)
+    async def stream(
+        self,
+        thread_id: str,
+        content: str,
+        graph,
+        thinking_effort: str = "high",
+        model: str | None = None,
+        subagent_model: str | None = None,
+    ):
+        config = _make_config(thread_id, thinking_effort, model, subagent_model)
         async for chunk in self._run_graph(
             {"messages": [HumanMessage(content=content)]}, config, graph
         ):
             yield chunk
 
-    async def resume(self, thread_id: str, decision: str, graph, model: str | None = None):
-        config = _make_config(thread_id, model=model)
+    async def resume(
+        self,
+        thread_id: str,
+        decision: str,
+        graph,
+        model: str | None = None,
+        subagent_model: str | None = None,
+    ):
+        config = _make_config(thread_id, model=model, subagent_model=subagent_model)
 
         # Count pending action_requests so we send exactly N decisions
         n = 1

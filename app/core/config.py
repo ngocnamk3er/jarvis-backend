@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
     OPENROUTER_MODEL: str = "deepseek/deepseek-r1-0528-qwen3-8b:free"
+    # Comma-separated model IDs tried, in order, if the requested model errors
+    # (rate-limited, down, etc.) — see build_llm_with_fallback() in llm.py,
+    # which chains these via LangChain's Runnable.with_fallbacks().
+    OPENROUTER_FALLBACK_MODELS: str = "deepseek/deepseek-v4-flash,deepseek/deepseek-v4-pro"
 
     TAVILY_API_KEY: str = ""
 

@@ -1,10 +1,12 @@
 """Sub-agent specs for the `task` tool (deepagents' SubAgentMiddleware)."""
 
+from langchain.agents.middleware import ToolCallLimitMiddleware
 from deepagents.middleware.subagents import SubAgent
 
 from app.agents.llm import build_llm
 from app.agents.tools.web_search import web_search
 from app.agents.tools.web_fetch import web_fetch
+from app.agents.tools.bash import bash
 
 _RESEARCH_SYSTEM_PROMPT = """You are a research subagent. The calling agent only sees your final
 message, not your intermediate searches/fetches — so your last message must be a complete,
@@ -15,6 +17,10 @@ self-contained report.
   topic has multiple independent angles
 - `web_fetch` — read the full content of a specific URL as markdown; never fetch the same URL
   twice (not even with a different #anchor — anchors don't change what's returned)
+- `bash` — only for processing data you already fetched (e.g. parsing a downloaded CSV, running a
+  calculation over numbers found during research). Every call pauses for human approval before it
+  runs, same as the main agent's `bash` — don't reach for it unless a search/fetch result actually
+  needs computation.
 
 ## Workflow
 1. Search from enough different angles to cover the topic (parallel calls for independent queries)
@@ -38,6 +44,15 @@ RESEARCH_SUBAGENT: SubAgent = {
         "web_fetch directly when the task needs more than 1-2 lookups."
     ),
     "system_prompt": _RESEARCH_SYSTEM_PROMPT,
-    "tools": [web_search, web_fetch],
+    "tools": [web_search, web_fetch, bash],
     "model": build_llm(),
+    "interrupt_on": {"bash": {"allowed_decisions": ["approve", "reject"]}},
+    # Caps each subagent *instance's* own tool use — independent of, and in
+    # addition to, the main agent's ToolCallLimitMiddleware(tool_name="task")
+    # cap on how many subagents get spawned in the first place.
+    "middleware": [
+        ToolCallLimitMiddleware(tool_name="web_search", run_limit=10, exit_behavior="continue"),
+        ToolCallLimitMiddleware(tool_name="web_fetch", run_limit=10, exit_behavior="continue"),
+        ToolCallLimitMiddleware(tool_name="bash", run_limit=5, exit_behavior="continue"),
+    ],
 }

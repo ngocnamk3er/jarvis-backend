@@ -42,6 +42,17 @@ def build_graph(checkpointer=None):
                 run_limit=50,
                 exit_behavior="end",
             ),
+            # "continue" (not "end" like the limiters above) because a burst that
+            # blows past this limit may also contain calls to other tools in the
+            # same turn (e.g. task + web_search together) — "end" raises
+            # NotImplementedError in that case since it can't cleanly stop with
+            # other pending tool calls. "continue" just blocks the excess `task`
+            # calls and lets the model wrap up with whatever subagents did run.
+            ToolCallLimitMiddleware(
+                tool_name="task",
+                run_limit=5,
+                exit_behavior="continue",
+            ),
             SubAgentMiddleware(
                 backend=StateBackend,
                 subagents=[RESEARCH_SUBAGENT],

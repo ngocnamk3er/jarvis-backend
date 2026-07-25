@@ -8,7 +8,7 @@ async def list_conversations(pool: AsyncConnectionPool) -> list[dict]:
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
-                "SELECT id, title, created_at, updated_at "
+                "SELECT id, title, last_model, created_at, updated_at "
                 "FROM conversations ORDER BY updated_at DESC"
             )
             rows = await cur.fetchall()
@@ -36,12 +36,18 @@ async def update_conversation_title(pool: AsyncConnectionPool, thread_id: str, t
         )
 
 
-async def touch_conversation(pool: AsyncConnectionPool, thread_id: str) -> None:
+async def touch_conversation(pool: AsyncConnectionPool, thread_id: str, model: str | None = None) -> None:
     async with pool.connection() as conn:
-        await conn.execute(
-            "UPDATE conversations SET updated_at = NOW() WHERE id = %s",
-            (thread_id,),
-        )
+        if model is not None:
+            await conn.execute(
+                "UPDATE conversations SET updated_at = NOW(), last_model = %s WHERE id = %s",
+                (model, thread_id),
+            )
+        else:
+            await conn.execute(
+                "UPDATE conversations SET updated_at = NOW() WHERE id = %s",
+                (thread_id,),
+            )
 
 
 async def delete_conversation(pool: AsyncConnectionPool, thread_id: str) -> None:

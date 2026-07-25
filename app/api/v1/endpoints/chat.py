@@ -18,7 +18,7 @@ async def list_models():
 async def chat_stream(request: ChatRequest, req: Request):
     graph = req.app.state.graph
     pool = get_pool()
-    await repository.touch_conversation(pool, request.thread_id)
+    await repository.touch_conversation(pool, request.thread_id, request.model)
     return StreamingResponse(
         chat_service.stream(request.thread_id, request.content, graph, request.thinking_effort, request.model),
         media_type="text/event-stream",

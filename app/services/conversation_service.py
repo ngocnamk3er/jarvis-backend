@@ -15,6 +15,7 @@ def _replay_subagent_trace(trace: list[dict], task_tool_call_id: str) -> list[di
     under the `task` badge after reload, same as they did live."""
     parts: list[dict] = []
     by_run_id: dict[str, dict] = {}
+    todos_part: dict | None = None
     batch_id = 0
     prev_type = None
     for ev in trace:
@@ -37,7 +38,19 @@ def _replay_subagent_trace(trace: list[dict], task_tool_call_id: str) -> list[di
             if tool:
                 tool["output"] = ev.get("output")
         elif ev["type"] == "todo_update":
-            parts.append({"type": "todos", "todos": ev.get("todos", []), "task_run_id": task_tool_call_id})
+            # write_todos replaces the whole list each call — keep updating
+            # the same part in place rather than stacking a new one per call,
+            # matching how the live stream shows a single updating widget.
+            if todos_part is None:
+                todos_part = {"type": "todos", "todos": ev.get("todos", []), "task_run_id": task_tool_call_id}
+                parts.append(todos_part)
+            else:
+                todos_part["todos"] = ev.get("todos", [])
+        elif ev["type"] == "viz":
+            parts.append({
+                "type": "viz", "format": ev["format"], "code": ev["code"], "title": ev.get("title", ""),
+                "task_run_id": task_tool_call_id,
+            })
         prev_type = ev["type"]
     return parts
 
@@ -53,8 +66,10 @@ def serialize_messages(messages: list, subagent_traces: dict[str, list[dict]] | 
     result: list[dict] = []
     pending_parts: list[dict] = []
     pending_usage_calls: list[dict] = []
+    todos_part: dict | None = None  # this turn's own todos part, updated in place — see write_todos below
 
     def flush():
+        nonlocal todos_part
         if pending_parts:
             entry: dict = {"role": "assistant", "parts": list(pending_parts)}
             if pending_usage_calls:
@@ -62,6 +77,7 @@ def serialize_messages(messages: list, subagent_traces: dict[str, list[dict]] | 
             result.append(entry)
             pending_parts.clear()
         pending_usage_calls.clear()
+        todos_part = None
 
     for msg in messages:
         if isinstance(msg, HumanMessage):
@@ -99,7 +115,12 @@ def serialize_messages(messages: list, subagent_traces: dict[str, list[dict]] | 
             batch_id = msg.id if len(tool_calls) > 1 else None
             for tc in tool_calls:
                 if tc["name"] == "write_todos":
-                    pending_parts.append({"type": "todos", "todos": (tc["args"] or {}).get("todos", [])})
+                    todos = (tc["args"] or {}).get("todos", [])
+                    if todos_part is None:
+                        todos_part = {"type": "todos", "todos": todos}
+                        pending_parts.append(todos_part)
+                    else:
+                        todos_part["todos"] = todos
                     continue
                 raw_output = tool_outputs.get(tc["id"], "")
                 try:

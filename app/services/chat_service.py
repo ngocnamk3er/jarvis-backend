@@ -185,7 +185,10 @@ class ToolEndEventHandler:
         try:
             data = json.loads(output)
             if "__viz__" in data:
-                return [{"type": "viz", "format": data["__viz__"], "code": data["code"], "title": data.get("title", "")}]
+                viz_result: dict = {"type": "viz", "format": data["__viz__"], "code": data["code"], "title": data.get("title", "")}
+                if task_run_id:
+                    viz_result["task_run_id"] = task_run_id
+                return [viz_result]
         except Exception:
             pass
         # Viz tools suppress tool_start/tool_chunk, so FE has no badge yet.

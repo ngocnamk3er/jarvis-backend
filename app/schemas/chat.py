@@ -32,3 +32,8 @@ class ChatRequest(BaseModel):
 class ResumeRequest(BaseModel):
     thread_id: str
     decision: Literal["approve", "reject"]
+    # Without this, resume used to silently fall back to DEFAULT_MODEL for
+    # the rest of the turn — confirmed live: a conversation selected as
+    # qwen3.5-9b, once a HITL approval triggered /chat/resume, kept running
+    # (and wrote the final synthesized answer) on deepseek-v4-flash instead.
+    model: str = DEFAULT_MODEL

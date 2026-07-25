@@ -399,8 +399,8 @@ class ChatService:
         ):
             yield chunk
 
-    async def resume(self, thread_id: str, decision: str, graph):
-        config = _make_config(thread_id)
+    async def resume(self, thread_id: str, decision: str, graph, model: str | None = None):
+        config = _make_config(thread_id, model=model)
 
         # Count pending action_requests so we send exactly N decisions
         n = 1

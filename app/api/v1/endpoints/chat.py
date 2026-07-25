@@ -28,7 +28,9 @@ async def chat_stream(request: ChatRequest, req: Request):
 @router.post("/resume")
 async def chat_resume(request: ResumeRequest, req: Request):
     graph = req.app.state.graph
+    pool = get_pool()
+    await repository.touch_conversation(pool, request.thread_id, request.model)
     return StreamingResponse(
-        chat_service.resume(request.thread_id, request.decision, graph),
+        chat_service.resume(request.thread_id, request.decision, graph, request.model),
         media_type="text/event-stream",
     )

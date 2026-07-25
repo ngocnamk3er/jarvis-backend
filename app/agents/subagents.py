@@ -1,6 +1,6 @@
 """Sub-agent specs for the `task` tool (deepagents' SubAgentMiddleware)."""
 
-from langchain.agents.middleware import ToolCallLimitMiddleware
+from langchain.agents.middleware import ToolCallLimitMiddleware, TodoListMiddleware
 from deepagents.middleware.subagents import SubAgent
 
 from app.agents.llm import build_llm
@@ -51,6 +51,7 @@ RESEARCH_SUBAGENT: SubAgent = {
     # addition to, the main agent's ToolCallLimitMiddleware(tool_name="task")
     # cap on how many subagents get spawned in the first place.
     "middleware": [
+        TodoListMiddleware(),
         ToolCallLimitMiddleware(tool_name="web_search", run_limit=10, exit_behavior="continue"),
         ToolCallLimitMiddleware(tool_name="web_fetch", run_limit=10, exit_behavior="continue"),
         ToolCallLimitMiddleware(tool_name="bash", run_limit=5, exit_behavior="continue"),

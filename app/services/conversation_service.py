@@ -36,6 +36,8 @@ def _replay_subagent_trace(trace: list[dict], task_tool_call_id: str) -> list[di
             tool = by_run_id.get(ev.get("run_id"))
             if tool:
                 tool["output"] = ev.get("output")
+        elif ev["type"] == "todo_update":
+            parts.append({"type": "todos", "todos": ev.get("todos", []), "task_run_id": task_tool_call_id})
         prev_type = ev["type"]
     return parts
 

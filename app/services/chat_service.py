@@ -155,7 +155,10 @@ class ToolStartEventHandler:
             # No matching tool_end needed (still suppressed via HIDDEN_TOOLS):
             # there's nothing more useful in the output than what's here.
             raw_input = event["data"].get("input") or {}
-            return [{"type": "todo_update", "todos": raw_input.get("todos", [])}]
+            result: dict = {"type": "todo_update", "todos": raw_input.get("todos", [])}
+            if task_run_id:
+                result["task_run_id"] = task_run_id
+            return [result]
         if event["name"] in VIZ_TOOLS or event["name"] in HIDDEN_TOOLS:
             return []
         raw_input = dict(event["data"].get("input") or {})

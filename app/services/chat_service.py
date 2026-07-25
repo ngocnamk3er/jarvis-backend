@@ -143,11 +143,19 @@ class ImplicitThinkingParser:
 
 
 VIZ_TOOLS = {"generate_visualization_svg"}
+TODO_TOOL = "write_todos"
 HIDDEN_TOOLS = {"write_todos"}
 
 
 class ToolStartEventHandler:
     def handle(self, event: dict, task_run_id: str | None = None) -> list[dict]:
+        if event["name"] == TODO_TOOL:
+            # write_todos replaces the whole list each call — its input IS the
+            # new state, so emit it directly instead of a generic tool badge.
+            # No matching tool_end needed (still suppressed via HIDDEN_TOOLS):
+            # there's nothing more useful in the output than what's here.
+            raw_input = event["data"].get("input") or {}
+            return [{"type": "todo_update", "todos": raw_input.get("todos", [])}]
         if event["name"] in VIZ_TOOLS or event["name"] in HIDDEN_TOOLS:
             return []
         raw_input = dict(event["data"].get("input") or {})

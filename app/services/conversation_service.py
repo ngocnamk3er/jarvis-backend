@@ -96,6 +96,9 @@ def serialize_messages(messages: list, subagent_traces: dict[str, list[dict]] | 
             # Tools in the same AIMessage were called in parallel — share a batch key
             batch_id = msg.id if len(tool_calls) > 1 else None
             for tc in tool_calls:
+                if tc["name"] == "write_todos":
+                    pending_parts.append({"type": "todos", "todos": (tc["args"] or {}).get("todos", [])})
+                    continue
                 raw_output = tool_outputs.get(tc["id"], "")
                 try:
                     import json as _json

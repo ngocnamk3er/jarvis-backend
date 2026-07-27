@@ -1,11 +1,13 @@
 from datetime import datetime
-from sqlalchemy import Text, DateTime, ForeignKey, func
+from sqlalchemy import MetaData, Text, DateTime, ForeignKey, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+SCHEMA = "jarvis"
+
 
 class Base(DeclarativeBase):
-    pass
+    metadata = MetaData(schema=SCHEMA)
 
 
 class Conversation(Base):

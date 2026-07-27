@@ -3,7 +3,6 @@ from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from app.db import repository
-from app.db.connection import get_pool
 
 # ---------------------------------------------------------------------------
 # Thinking parser — splits <think>…</think> out of the content stream
@@ -385,7 +384,7 @@ class ChatService:
                         trace = nested_events_by_task.get(run_id)
                         tool_call_id = self._task_tool_call_id(event)
                         if trace and tool_call_id:
-                            await repository.save_subagent_trace(get_pool(), thread_id, tool_call_id, trace)
+                            await repository.save_subagent_trace(thread_id, tool_call_id, trace)
 
                 if results:
                     for data in results:

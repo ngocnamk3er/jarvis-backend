@@ -156,33 +156,33 @@ def serialize_messages(messages: list, subagent_traces: dict[str, list[dict]] | 
 # ── CRUD ──────────────────────────────────────────────────────────────────────
 
 
-async def list_conversations(pool):
-    return await repository.list_conversations(pool)
+async def list_conversations():
+    return await repository.list_conversations()
 
 
-async def create_conversation(pool, title: str):
-    return await repository.create_conversation(pool, title)
+async def create_conversation(title: str):
+    return await repository.create_conversation(title)
 
 
-async def delete_conversation(pool, graph, conversation_id: str) -> None:
+async def delete_conversation(graph, conversation_id: str) -> None:
     stop_container(conversation_id)
 
     sandbox_dir = Path(settings.SANDBOX_DATA_DIR) / conversation_id
     if sandbox_dir.exists():
         shutil.rmtree(sandbox_dir, ignore_errors=True)
 
-    await repository.delete_conversation(pool, conversation_id)
+    await repository.delete_conversation(conversation_id)
 
 
-async def update_title(pool, conversation_id: str, title: str):
-    await repository.update_conversation_title(pool, conversation_id, title)
+async def update_title(conversation_id: str, title: str):
+    await repository.update_conversation_title(conversation_id, title)
 
 
-async def get_messages(graph, conversation_id: str, pool) -> dict:
+async def get_messages(graph, conversation_id: str) -> dict:
     config = {"configurable": {"thread_id": conversation_id}}
     state = await graph.aget_state(config)
     messages = state.values.get("messages", []) if state.values else []
-    subagent_traces = await repository.get_subagent_traces(pool, conversation_id)
+    subagent_traces = await repository.get_subagent_traces(conversation_id)
     return {
         "messages": serialize_messages(messages, subagent_traces),
         "is_pending": bool(state.next),

@@ -1,14 +1,17 @@
 from psycopg_pool import AsyncConnectionPool
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from app.core.config import settings
 from app.db.models import SCHEMA
 
 pool: AsyncConnectionPool | None = None
 checkpointer: AsyncPostgresSaver | None = None
+engine: AsyncEngine | None = None
+async_session: async_sessionmaker[AsyncSession] | None = None
 
 
 async def init_db() -> AsyncPostgresSaver:
-    global pool, checkpointer
+    global pool, checkpointer, engine, async_session
     pool = AsyncConnectionPool(
         conninfo=settings.DATABASE_URL,
         open=False,
@@ -53,15 +56,25 @@ async def init_db() -> AsyncPostgresSaver:
     checkpointer = AsyncPostgresSaver(pool)
     await checkpointer.setup()
 
+    # Separate SQLAlchemy engine for ORM queries (repository.py) — LangGraph's
+    # checkpointer needs its own raw psycopg AsyncConnectionPool above, so this
+    # runs as a second, independent pool to the same database rather than
+    # trying to share one pool between the two libraries.
+    db_url = settings.DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+    engine = create_async_engine(db_url)
+    async_session = async_sessionmaker(engine, expire_on_commit=False)
+
     return checkpointer
 
 
 async def close_db() -> None:
     if pool:
         await pool.close()
+    if engine:
+        await engine.dispose()
 
 
-def get_pool() -> AsyncConnectionPool:
-    if pool is None:
+def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
+    if async_session is None:
         raise RuntimeError("Database not initialised")
-    return pool
+    return async_session

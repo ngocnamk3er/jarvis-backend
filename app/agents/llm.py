@@ -12,6 +12,11 @@ def enable_llm_cache(path: str = ".langchain_cache.db") -> None:
     set_llm_cache(SQLiteCache(database_path=path))
 
 
+# Tried via each model's own .with_fallbacks() chain (see build_llm_with_fallback
+# below) if the primary errors (rate-limited, down, etc.).
+_FALLBACK_MODELS = [m.strip() for m in settings.OPENROUTER_FALLBACK_MODELS.split(",") if m.strip()]
+
+
 class ThinkingChatOpenAI(ChatOpenAI):
     """ChatOpenAI with two additions:
     1. Reads `thinking_effort` and `model` from LangGraph's configurable at
@@ -19,6 +24,24 @@ class ThinkingChatOpenAI(ChatOpenAI):
     2. Rescues OpenRouter's `reasoning` delta field that LangChain drops,
        storing it in additional_kwargs so chat_service emits thinking_token events.
     """
+
+    # False on fallback-chain instances (build_llm_with_fallback) so they keep
+    # their own fixed model instead of also picking up the ambient per-turn
+    # override — get_config() is read the same regardless of which instance
+    # in the chain is executing, so without this every fallback would just
+    # retry the same (already-failing) user-selected model instead of
+    # actually diversifying.
+    honor_model_override: bool = True
+
+    # True for the research subagent's own model (see subagents.py). Reads
+    # "subagent_model" from configurable instead of "model" — LangGraph's
+    # ensure_config merges the root run's configurable into the subagent's
+    # own config (verified live), so without a distinct key the subagent
+    # would always just inherit whatever model the main agent is using,
+    # with no way to pick a different one for it specifically. Falls back to
+    # "model" when "subagent_model" isn't set, so subagents still inherit
+    # the main model by default until the user explicitly overrides it.
+    is_subagent_model: bool = False
 
     def _get_request_payload(self, input_, *, stop=None, **kwargs):
         try:
@@ -31,8 +54,11 @@ class ThinkingChatOpenAI(ChatOpenAI):
         if "extra_body" not in kwargs:
             kwargs["extra_body"] = {"reasoning": {"effort": effort, "exclude": False}}
 
-        model_override = cfg.get("model")
-        if model_override and "model" not in kwargs:
+        if self.is_subagent_model:
+            model_override = cfg.get("subagent_model") or cfg.get("model")
+        else:
+            model_override = cfg.get("model")
+        if model_override and self.honor_model_override and "model" not in kwargs:
             kwargs["model"] = model_override
 
         return super()._get_request_payload(input_, stop=stop, **kwargs)
@@ -59,7 +85,9 @@ class ThinkingChatOpenAI(ChatOpenAI):
         return gen_chunk
 
 
-def build_llm(model: str | None = None) -> ThinkingChatOpenAI:
+def build_llm(
+    model: str | None = None, *, honor_model_override: bool = True, is_subagent_model: bool = False
+) -> ThinkingChatOpenAI:
     return ThinkingChatOpenAI(
         model=model or settings.OPENROUTER_MODEL,
         api_key=settings.OPENROUTER_API_KEY,
@@ -69,4 +97,28 @@ def build_llm(model: str | None = None) -> ThinkingChatOpenAI:
         # OpenRouter only reports token usage on the final stream chunk when asked;
         # ChatOpenAI auto-enables this for api.openai.com but not custom base URLs.
         stream_usage=True,
+        honor_model_override=honor_model_override,
+        is_subagent_model=is_subagent_model,
     )
+
+
+def build_llm_with_fallback(model: str | None = None, *, is_subagent_model: bool = False):
+    """build_llm(), plus a LangChain .with_fallbacks() chain: if the primary
+    model errors (rate-limited, down, etc.), retries on the next model in
+    OPENROUTER_FALLBACK_MODELS, in order, within the same call.
+
+    Used for both the root agent and every subagent — RESEARCH_SUBAGENT is
+    wired as a CompiledSubAgent (see subagents.py) specifically so it can
+    take a .with_fallbacks() Runnable here instead of a plain model; passing
+    one through the raw SubAgent "model" field breaks, since deepagents'
+    resolve_model() unconditionally treats non-BaseChatModel objects as
+    provider-prefixed strings (verified: raises AttributeError: 'count').
+    """
+    primary_id = model or settings.OPENROUTER_MODEL
+    primary = build_llm(model, is_subagent_model=is_subagent_model)
+    fallbacks = [
+        build_llm(m, honor_model_override=False, is_subagent_model=is_subagent_model)
+        for m in _FALLBACK_MODELS
+        if m != primary_id
+    ]
+    return primary.with_fallbacks(fallbacks) if fallbacks else primary

@@ -8,7 +8,7 @@ from deepagents.middleware.summarization import SummarizationMiddleware
 from deepagents.middleware.subagents import SubAgentMiddleware
 from deepagents.backends import StateBackend
 
-from app.agents.llm import build_llm
+from app.agents.llm import build_llm_with_fallback
 from app.agents.prompt import build_system_prompt
 from app.agents.tools import tools
 from app.agents.subagents import RESEARCH_SUBAGENT
@@ -16,13 +16,13 @@ from app.agents.subagents import RESEARCH_SUBAGENT
 
 def build_graph(checkpointer=None):
     return create_agent(
-        model=build_llm(),
+        model=build_llm_with_fallback(),
         tools=tools,
         system_prompt=build_system_prompt(),
         checkpointer=checkpointer,
         middleware=[
             SummarizationMiddleware(
-                model=build_llm(),
+                model=build_llm_with_fallback(),
                 backend=StateBackend,
                 trigger=("tokens", 60000),
                 keep=("messages", 20),
@@ -41,6 +41,17 @@ def build_graph(checkpointer=None):
                 tool_name="web_fetch",
                 run_limit=50,
                 exit_behavior="end",
+            ),
+            # "continue" (not "end" like the limiters above) because a burst that
+            # blows past this limit may also contain calls to other tools in the
+            # same turn (e.g. task + web_search together) — "end" raises
+            # NotImplementedError in that case since it can't cleanly stop with
+            # other pending tool calls. "continue" just blocks the excess `task`
+            # calls and lets the model wrap up with whatever subagents did run.
+            ToolCallLimitMiddleware(
+                tool_name="task",
+                run_limit=5,
+                exit_behavior="continue",
             ),
             SubAgentMiddleware(
                 backend=StateBackend,

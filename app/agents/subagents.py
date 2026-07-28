@@ -7,7 +7,6 @@ from deepagents.middleware.subagents import CompiledSubAgent
 from app.agents.llm import build_llm_with_fallback
 from app.agents.tools.web_search import web_search
 from app.agents.tools.web_fetch import web_fetch
-from app.agents.tools.get_current_time import get_current_time
 from app.agents.tools.bash import bash
 from app.agents.tools.generate_visualization_svg import generate_visualization_svg
 
@@ -20,8 +19,6 @@ self-contained report.
   topic has multiple independent angles
 - `web_fetch` — read the full content of a specific URL as markdown; never fetch the same URL
   twice (not even with a different #anchor — anchors don't change what's returned)
-- `get_current_time` — get the current date/time in a specific IANA timezone; use this instead of
-  guessing "today's date" or converting times between cities yourself
 - `bash` — only for processing data you already fetched (e.g. parsing a downloaded CSV, running a
   calculation over numbers found during research). Every call pauses for human approval before it
   runs, same as the main agent's `bash` — don't reach for it unless a search/fetch result actually
@@ -57,7 +54,7 @@ RESEARCH_SUBAGENT: CompiledSubAgent = {
     ),
     "runnable": create_agent(
         model=build_llm_with_fallback(is_subagent_model=True),
-        tools=[web_search, web_fetch, get_current_time, bash, generate_visualization_svg],
+        tools=[web_search, web_fetch, bash, generate_visualization_svg],
         system_prompt=_RESEARCH_SYSTEM_PROMPT,
         name="research",
         # Caps each subagent *instance's* own tool use — independent of, and in

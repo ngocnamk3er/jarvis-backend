@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
-from app.schemas.chat import ChatRequest, ResumeRequest, AVAILABLE_MODELS
+from app.schemas.chat import ChatRequest, ResumeRequest, ClarifyResumeRequest, AVAILABLE_MODELS
 from app.services.chat_service import chat_service
 from app.db import repository
 
@@ -36,5 +36,15 @@ async def chat_resume(request: ResumeRequest, req: Request):
     await repository.touch_conversation(request.thread_id, request.model, request.subagent_model)
     return StreamingResponse(
         chat_service.resume(request.thread_id, request.decision, graph, request.model, request.subagent_model),
+        media_type="text/event-stream",
+    )
+
+
+@router.post("/resume_clarify")
+async def chat_resume_clarify(request: ClarifyResumeRequest, req: Request):
+    graph = req.app.state.graph
+    await repository.touch_conversation(request.thread_id, request.model, request.subagent_model)
+    return StreamingResponse(
+        chat_service.resume_clarify(request.thread_id, request.answer, graph, request.model, request.subagent_model),
         media_type="text/event-stream",
     )

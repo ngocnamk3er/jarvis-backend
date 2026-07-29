@@ -143,7 +143,10 @@ class ImplicitThinkingParser:
 
 VIZ_TOOLS = {"generate_visualization_svg"}
 TODO_TOOL = "write_todos"
-HIDDEN_TOOLS = {"write_todos"}
+# ask_user has its own dedicated clarify_request event (see _extract_hitl_events)
+# instead of a generic tool badge — the interrupt it raises means its tool_end
+# never fires in this streaming pass anyway (see resume_clarify's docstring).
+HIDDEN_TOOLS = {"write_todos", "ask_user"}
 
 
 class ToolStartEventHandler:
@@ -230,7 +233,13 @@ def _make_config(
 
 
 def _extract_hitl_events(state) -> list[str]:
-    """Return serialised hitl_request SSE lines for any pending HITL interrupts."""
+    """Return serialised hitl_request/clarify_request SSE lines for any pending
+    interrupts — two different shapes share the same graph.aget_state().interrupts
+    list: HumanInTheLoopMiddleware's bash approval ("action_requests") and the
+    ask_user tool's own raw interrupt() call ("question"), each resumed via a
+    different endpoint (/chat/resume vs /chat/resume_clarify) since they expect
+    different Command(resume=...) payload shapes.
+    """
     events = []
     for interrupt in getattr(state, "interrupts", ()):
         value = interrupt.value
@@ -239,6 +248,12 @@ def _extract_hitl_events(state) -> list[str]:
                 "type": "hitl_request",
                 "actions": value["action_requests"],
                 "review_configs": value.get("review_configs", []),
+            }))
+        elif isinstance(value, dict) and "question" in value:
+            events.append(json.dumps({
+                "type": "clarify_request",
+                "question": value["question"],
+                "options": value.get("options"),
             }))
     return events
 
@@ -439,6 +454,23 @@ class ChatService:
         async for chunk in self._run_graph(
             Command(resume={"decisions": decisions}), config, graph
         ):
+            yield chunk
+
+    async def resume_clarify(
+        self,
+        thread_id: str,
+        answer: str,
+        graph,
+        model: str | None = None,
+        subagent_model: str | None = None,
+    ):
+        """Resume an ask_user interrupt. Unlike resume() above, this Command's
+        resume value is the raw answer string itself — ask_user's interrupt()
+        call returns exactly whatever value Command(resume=...) carries, since
+        it's a bare langgraph interrupt() rather than HumanInTheLoopMiddleware's
+        decisions-list protocol."""
+        config = _make_config(thread_id, model=model, subagent_model=subagent_model)
+        async for chunk in self._run_graph(Command(resume=answer), config, graph):
             yield chunk
 
 

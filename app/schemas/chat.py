@@ -85,3 +85,10 @@ class ResumeRequest(BaseModel):
     # (and wrote the final synthesized answer) on deepseek-v4-flash instead.
     model: str = DEFAULT_MODEL
     subagent_model: str | None = None
+
+
+class ClarifyResumeRequest(BaseModel):
+    thread_id: str
+    answer: str
+    model: str = DEFAULT_MODEL
+    subagent_model: str | None = None

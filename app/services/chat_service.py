@@ -2,6 +2,7 @@ import json
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
+from app.agents.middleware import TOOL_CALL_LIMIT_EVENT
 from app.db import repository
 
 # ---------------------------------------------------------------------------
@@ -400,6 +401,13 @@ class ChatService:
                         tool_call_id = self._task_tool_call_id(event)
                         if trace and tool_call_id:
                             await repository.save_subagent_trace(thread_id, tool_call_id, trace)
+                elif event["event"] == "on_custom_event" and event.get("name") == TOOL_CALL_LIMIT_EVENT:
+                    limit_event = {"type": "tool_limit", **event["data"]}
+                    if task_run_id:
+                        limit_event["task_run_id"] = task_run_id
+                    results = [limit_event]
+                    if task_run_id:
+                        nested_events_by_task.setdefault(task_run_id, []).extend(results)
 
                 if results:
                     for data in results:

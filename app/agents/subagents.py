@@ -1,10 +1,11 @@
 """Sub-agent specs for the `task` tool (deepagents' SubAgentMiddleware)."""
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import HumanInTheLoopMiddleware, ToolCallLimitMiddleware, TodoListMiddleware
+from langchain.agents.middleware import HumanInTheLoopMiddleware, TodoListMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent
 
 from app.agents.llm import build_llm_with_fallback
+from app.agents.middleware import SoftHardToolCallLimitMiddleware
 from app.agents.tools.web_search import web_search
 from app.agents.tools.web_fetch import web_fetch
 from app.agents.tools.bash import bash
@@ -58,17 +59,29 @@ RESEARCH_SUBAGENT: CompiledSubAgent = {
         system_prompt=_RESEARCH_SYSTEM_PROMPT,
         name="research",
         # Caps each subagent *instance's* own tool use — independent of, and in
-        # addition to, the main agent's ToolCallLimitMiddleware(tool_name="task")
+        # addition to, the main agent's SoftHardToolCallLimitMiddleware(tool_name="task")
         # cap on how many subagents get spawned in the first place.
         middleware=[
             TodoListMiddleware(),
-            ToolCallLimitMiddleware(tool_name="web_search", run_limit=10, exit_behavior="continue"),
-            ToolCallLimitMiddleware(tool_name="web_fetch", run_limit=10, exit_behavior="continue"),
-            ToolCallLimitMiddleware(tool_name="bash", run_limit=5, exit_behavior="continue"),
-            ToolCallLimitMiddleware(tool_name="generate_visualization_svg", run_limit=3, exit_behavior="continue"),
+            # Two-tier per-run caps, same as the main agent's (see graph.py) — soft
+            # blocks-but-continues, hard blocks-and-stops this subagent's own run.
+            SoftHardToolCallLimitMiddleware(
+                tool_name="web_search", soft_limit=10, hard_limit=12
+            ),
+            SoftHardToolCallLimitMiddleware(
+                tool_name="web_fetch", soft_limit=10, hard_limit=12
+            ),
+            SoftHardToolCallLimitMiddleware(
+                tool_name="bash", soft_limit=5, hard_limit=7
+            ),
+            SoftHardToolCallLimitMiddleware(
+                tool_name="generate_visualization_svg", soft_limit=3, hard_limit=5
+            ),
             # Appended last to match deepagents' own raw-SubAgent ordering
             # (it appends this after any custom middleware from the spec).
-            HumanInTheLoopMiddleware(interrupt_on={"bash": {"allowed_decisions": ["approve", "reject"]}}),
+            HumanInTheLoopMiddleware(
+                interrupt_on={"bash": {"allowed_decisions": ["approve", "reject"]}}
+            ),
         ],
     ),
 }

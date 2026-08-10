@@ -18,19 +18,29 @@ def _conversation_dict(c: Conversation) -> dict:
     }
 
 
-async def list_conversations() -> list[dict]:
+async def list_conversations(user_id: str) -> list[dict]:
     async with get_sessionmaker()() as session:
-        result = await session.execute(select(Conversation).order_by(Conversation.updated_at.desc()))
+        result = await session.execute(
+            select(Conversation)
+            .where(Conversation.user_id == user_id)
+            .order_by(Conversation.updated_at.desc())
+        )
         return [_conversation_dict(c) for c in result.scalars()]
 
 
-async def create_conversation(title: str = "New conversation") -> dict:
-    conversation = Conversation(id=str(uuid4()), title=title)
+async def create_conversation(title: str, user_id: str) -> dict:
+    conversation = Conversation(id=str(uuid4()), title=title, user_id=user_id)
     async with get_sessionmaker()() as session:
         session.add(conversation)
         await session.commit()
         await session.refresh(conversation)
         return _conversation_dict(conversation)
+
+
+async def get_conversation(thread_id: str) -> Conversation | None:
+    async with get_sessionmaker()() as session:
+        result = await session.execute(select(Conversation).where(Conversation.id == thread_id))
+        return result.scalar_one_or_none()
 
 
 async def update_conversation_title(thread_id: str, title: str) -> None:

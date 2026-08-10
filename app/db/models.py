@@ -14,6 +14,7 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
+    user_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     title: Mapped[str] = mapped_column(Text, nullable=False, server_default="New conversation")
     last_model: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_subagent_model: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -1,10 +1,18 @@
 import shutil
 from pathlib import Path
+from fastapi import HTTPException
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
 from app.core.config import settings
 from app.db import repository
 from app.agents.tools.sandbox_manager import stop_container
+
+
+async def _get_owned_conversation(conversation_id: str, user_id: str):
+    conv = await repository.get_conversation(conversation_id)
+    if conv is None or conv.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conv
 
 # ── serialization ─────────────────────────────────────────────────────────────
 
@@ -156,15 +164,17 @@ def serialize_messages(messages: list, subagent_traces: dict[str, list[dict]] | 
 # ── CRUD ──────────────────────────────────────────────────────────────────────
 
 
-async def list_conversations():
-    return await repository.list_conversations()
+async def list_conversations(user_id: str):
+    return await repository.list_conversations(user_id)
 
 
-async def create_conversation(title: str):
-    return await repository.create_conversation(title)
+async def create_conversation(title: str, user_id: str):
+    return await repository.create_conversation(title, user_id)
 
 
-async def delete_conversation(graph, conversation_id: str) -> None:
+async def delete_conversation(graph, conversation_id: str, user_id: str) -> None:
+    await _get_owned_conversation(conversation_id, user_id)
+
     stop_container(conversation_id)
 
     sandbox_dir = Path(settings.SANDBOX_DATA_DIR) / conversation_id
@@ -174,11 +184,13 @@ async def delete_conversation(graph, conversation_id: str) -> None:
     await repository.delete_conversation(conversation_id)
 
 
-async def update_title(conversation_id: str, title: str):
+async def update_title(conversation_id: str, title: str, user_id: str):
+    await _get_owned_conversation(conversation_id, user_id)
     await repository.update_conversation_title(conversation_id, title)
 
 
-async def get_messages(graph, conversation_id: str) -> dict:
+async def get_messages(graph, conversation_id: str, user_id: str) -> dict:
+    await _get_owned_conversation(conversation_id, user_id)
     config = {"configurable": {"thread_id": conversation_id}}
     state = await graph.aget_state(config)
     messages = state.values.get("messages", []) if state.values else []

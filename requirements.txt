@@ -19,3 +19,4 @@ alembic>=1.13.0
 sqlalchemy>=2.0.0
 python-multipart
 playwright>=1.48.0
+PyJWT[crypto]>=2.12.0

@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql://jarvis:jarvis@localhost:5433/jarvis"
 
     BACKEND_URL: str = "http://localhost:8000"
+    FRONTEND_URL: str = "http://localhost:3000"
+
+    OIDC_ISSUER: str = "http://localhost:8180/realms/jarvis"
+    OIDC_AUDIENCE: str = "jarvis-frontend"
+    OIDC_JWKS_URL: str = "http://localhost:8180/realms/jarvis/protocol/openid-connect/certs"
+    OIDC_JWKS_CACHE_TTL_SECONDS: int = 3600
 
     MINIO_ENDPOINT: str = "localhost:9000"
     MINIO_ACCESS_KEY: str = "jarvis"

@@ -15,14 +15,19 @@ from app.agents.prompt import build_system_prompt
 from app.agents.tools import tools
 from app.agents.subagents import RESEARCH_SUBAGENT
 
-# Memory tools are scoped to write_file/edit_file/read_file only (not ls/glob/
-# grep/execute) — this project deliberately removed the generic file-tool
-# surface in favor of `bash` for all sandbox file work (see prompt.py).
-# read_file is required by FilesystemMiddleware whenever edit_file is enabled
-# (it raises ValueError otherwise — edit_file needs to read-before-diff). These
-# three names are reused here only because MemoryMiddleware's own prompt tells
-# the model to call `edit_file`; the descriptions below disambiguate them from
-# sandbox file operations so the model doesn't confuse the two.
+# FilesystemMiddleware has no way to restrict which tools it registers on the
+# deepagents version this project is pinned to (>=0.6.0 — verified against an
+# actual 0.6.11 install: its __init__ has no `tools=` parameter at all, that
+# was only added in a later 0.x release). It unconditionally creates all 7:
+# ls, read_file, write_file, edit_file, glob, grep, execute. All 7 still only
+# ever touch memory_backend (the per-user Postgres Store namespace) — never
+# the sandbox filesystem `bash` uses — so there's no functional overlap, but
+# ls/glob/grep/execute are pointless here (there's only ever the one
+# "AGENTS.md" key, and StoreBackend doesn't implement execute at all — calling
+# it just returns an error to the model, verified: building FilesystemMiddleware
+# with a StoreBackend does not fail at construction time). Descriptions below
+# disambiguate every one of them from sandbox file operations so the model
+# doesn't confuse the two, and steer it away from the four pointless ones.
 _MEMORY_TOOL_DESCRIPTIONS = {
     "write_file": (
         "Save a new personal-memory note about the current user (e.g. their "
@@ -39,6 +44,10 @@ _MEMORY_TOOL_DESCRIPTIONS = {
         "user before editing it. This is NOT for sandbox files — use bash "
         "for those."
     ),
+    "ls": "Lists personal-memory notes — there is only ever 'AGENTS.md'. Not for sandbox files.",
+    "glob": "Searches personal-memory notes — there is only ever 'AGENTS.md', so this is rarely useful. Not for sandbox files.",
+    "grep": "Searches inside 'AGENTS.md'. For anything else, use bash instead.",
+    "execute": "Not supported for personal memory — this will always fail. Use bash for running commands.",
 }
 
 
@@ -67,7 +76,6 @@ def build_graph(checkpointer=None, store=None):
             MemoryMiddleware(backend=memory_backend, sources=["AGENTS.md"]),
             FilesystemMiddleware(
                 backend=memory_backend,
-                tools=["write_file", "edit_file", "read_file"],
                 custom_tool_descriptions=_MEMORY_TOOL_DESCRIPTIONS,
             ),
             HumanInTheLoopMiddleware(

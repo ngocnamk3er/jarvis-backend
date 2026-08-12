@@ -1,5 +1,6 @@
 import json
-from langchain_core.messages import HumanMessage
+from uuid import uuid4
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
 from app.agents.middleware import TOOL_CALL_LIMIT_EVENT
@@ -218,6 +219,7 @@ class ToolEndEventHandler:
 
 def _make_config(
     thread_id: str,
+    user_id: str,
     thinking_effort: str = "high",
     model: str | None = None,
     subagent_model: str | None = None,
@@ -225,6 +227,9 @@ def _make_config(
     return {
         "configurable": {
             "thread_id": thread_id,
+            # Scopes the per-user memory store namespace — see
+            # app/agents/memory.py's _user_memory_namespace.
+            "user_id": user_id,
             "thinking_effort": thinking_effort,
             "model": model,
             "subagent_model": subagent_model,
@@ -429,11 +434,12 @@ class ChatService:
         thread_id: str,
         content: str,
         graph,
+        user_id: str,
         thinking_effort: str = "high",
         model: str | None = None,
         subagent_model: str | None = None,
     ):
-        config = _make_config(thread_id, thinking_effort, model, subagent_model)
+        config = _make_config(thread_id, user_id, thinking_effort, model, subagent_model)
         async for chunk in self._run_graph(
             {"messages": [HumanMessage(content=content)]}, config, graph
         ):
@@ -444,10 +450,11 @@ class ChatService:
         thread_id: str,
         decision: str,
         graph,
+        user_id: str,
         model: str | None = None,
         subagent_model: str | None = None,
     ):
-        config = _make_config(thread_id, model=model, subagent_model=subagent_model)
+        config = _make_config(thread_id, user_id, model=model, subagent_model=subagent_model)
 
         # Count pending action_requests so we send exactly N decisions
         n = 1
@@ -469,6 +476,7 @@ class ChatService:
         thread_id: str,
         answer: str,
         graph,
+        user_id: str,
         model: str | None = None,
         subagent_model: str | None = None,
     ):
@@ -477,8 +485,45 @@ class ChatService:
         call returns exactly whatever value Command(resume=...) carries, since
         it's a bare langgraph interrupt() rather than HumanInTheLoopMiddleware's
         decisions-list protocol."""
-        config = _make_config(thread_id, model=model, subagent_model=subagent_model)
+        config = _make_config(thread_id, user_id, model=model, subagent_model=subagent_model)
         async for chunk in self._run_graph(Command(resume=answer), config, graph):
+            yield chunk
+
+    async def compact(
+        self,
+        thread_id: str,
+        graph,
+        user_id: str,
+        model: str | None = None,
+        subagent_model: str | None = None,
+    ):
+        """Force-execute the compact_conversation tool (see
+        SummarizationToolMiddleware in graph.py) without waiting for the model
+        to decide to call it — triggered by the frontend's Compact button.
+
+        LangGraph's agent graph routes model -> tools whenever the last
+        message is an AIMessage with pending tool_calls (verified via
+        agent.get_graph()). Seeding that state directly, tagged as if the
+        `model` node produced it via as_node="model", makes the graph resume
+        straight into executing the tool — the same mechanism LangGraph uses
+        for manual state edits/time-travel, not a hack around the library.
+        """
+        config = _make_config(thread_id, user_id, model=model, subagent_model=subagent_model)
+        await graph.aupdate_state(
+            config,
+            {
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "compact_conversation", "args": {}, "id": str(uuid4())}],
+                    )
+                ]
+            },
+            as_node="model",
+        )
+        # None input resumes execution from the current checkpoint state
+        # (the tool call just seeded above) rather than sending new input.
+        async for chunk in self._run_graph(None, config, graph):
             yield chunk
 
 

@@ -1,11 +1,32 @@
 """Custom middleware not covered by langchain's built-ins."""
 
 from typing import Any
+from typing_extensions import NotRequired
 
 from langchain_core.callbacks import adispatch_custom_event, dispatch_custom_event
 from langchain_core.messages import AIMessage, ToolCall, ToolMessage
-from langchain.agents.middleware.types import AgentMiddleware, hook_config
+from langchain.agents.middleware.types import AgentMiddleware, AgentState, hook_config
 from langchain.agents.middleware.tool_call_limit import ToolCallLimitState
+
+
+class ContextTokensState(AgentState):
+    context_tokens: NotRequired[int]
+
+
+class ContextTokensMiddleware(AgentMiddleware):
+    """Contributes the `context_tokens` state key so chat_service.py's
+    _run_graph can persist the current-context-size gauge into the LangGraph
+    checkpoint itself, in addition to Conversation.context_tokens in
+    Postgres (see repository.set_context_tokens) — verified live that a
+    plain scalar key contributed this way survives aupdate_state/aget_state
+    with last-writer-wins semantics, same as the Postgres column.
+
+    No hooks — purely a state_schema extension. Kept in both build_graph()
+    variants (unlike SummarizationToolMiddleware) since every turn writes
+    this, not just compact() runs.
+    """
+
+    state_schema = ContextTokensState
 
 # Custom event name dispatched on a soft/hard breach — picked up by
 # chat_service.py's _run_graph (as an `on_custom_event` from astream_events)

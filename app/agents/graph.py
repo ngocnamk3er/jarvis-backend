@@ -10,7 +10,7 @@ from deepagents.backends import StateBackend
 
 from app.agents.llm import build_llm_with_fallback
 from app.agents.memory import memory_backend
-from app.agents.middleware import SoftHardToolCallLimitMiddleware
+from app.agents.middleware import ContextTokensMiddleware, SoftHardToolCallLimitMiddleware
 from app.agents.prompt import build_system_prompt
 from app.agents.tools import tools
 from app.agents.subagents import RESEARCH_SUBAGENT
@@ -86,6 +86,7 @@ def build_graph(checkpointer=None, store=None, include_compact_tool: bool = Fals
     )
     middleware = [
         summarization_middleware,
+        ContextTokensMiddleware(),
     ]
     if include_compact_tool:
         # compact_conversation tool — reuses summarization_middleware's own

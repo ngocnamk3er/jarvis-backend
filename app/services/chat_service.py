@@ -433,6 +433,12 @@ class ChatService:
 
             if last_context_tokens is not None:
                 await repository.set_context_tokens(thread_id, last_context_tokens)
+                # Also mirrored into the checkpoint itself (ContextTokensMiddleware
+                # in app/agents/middleware.py contributes this state key) —
+                # verified live that a plain scalar key persists correctly via
+                # aupdate_state/aget_state, same last-writer-wins semantics as
+                # the Postgres column above.
+                await graph.aupdate_state(config, {"context_tokens": last_context_tokens}, as_node="model")
                 yield f"data: {json.dumps({'type': 'context_tokens', 'tokens': last_context_tokens})}\n\n"
 
         except Exception as e:

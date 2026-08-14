@@ -28,7 +28,13 @@ async def lifespan(app: FastAPI):
     if settings.LLM_CACHE:
         enable_llm_cache()
     checkpointer = await init_db()
-    app.state.graph = build_graph(checkpointer=checkpointer, store=get_store())
+    store = get_store()
+    app.state.graph = build_graph(checkpointer=checkpointer, store=store)
+    # Separate graph, same checkpointer/store (so it resumes the exact same
+    # persisted thread state) — only this one has compact_conversation bound,
+    # so normal chat never sees/pays for/can self-trigger it. See
+    # build_graph()'s docstring in app/agents/graph.py.
+    app.state.compact_graph = build_graph(checkpointer=checkpointer, store=store, include_compact_tool=True)
     cleanup_task = asyncio.create_task(_sandbox_cleanup_loop())
     yield
     cleanup_task.cancel()

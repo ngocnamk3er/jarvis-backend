@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import MetaData, Text, DateTime, ForeignKey, func
+from sqlalchemy import MetaData, Text, DateTime, ForeignKey, Integer, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -18,6 +18,11 @@ class Conversation(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False, server_default="New conversation")
     last_model: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_subagent_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Current context size (not a lifetime total) — the most recent top-level
+    # LLM call's total_tokens, overwritten each turn by
+    # chat_service._run_graph. Drops after a Compact run since the follow-up
+    # model call that closes out the tool turn sees the now-trimmed context.
+    context_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

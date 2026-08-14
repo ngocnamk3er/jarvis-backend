@@ -13,6 +13,7 @@ def _conversation_dict(c: Conversation) -> dict:
         "title": c.title,
         "last_model": c.last_model,
         "last_subagent_model": c.last_subagent_model,
+        "context_tokens": c.context_tokens,
         "created_at": c.created_at,
         "updated_at": c.updated_at,
     }
@@ -63,6 +64,17 @@ async def touch_conversation(
         values["last_subagent_model"] = subagent_model
     async with get_sessionmaker()() as session:
         await session.execute(update(Conversation).where(Conversation.id == thread_id).values(**values))
+        await session.commit()
+
+
+async def set_context_tokens(thread_id: str, tokens: int) -> None:
+    """Overwrite (not accumulate) the conversation's current-context-size
+    gauge — see Conversation.context_tokens for why this is last-call-wins
+    rather than a running total."""
+    async with get_sessionmaker()() as session:
+        await session.execute(
+            update(Conversation).where(Conversation.id == thread_id).values(context_tokens=tokens, updated_at=func.now())
+        )
         await session.commit()
 
 

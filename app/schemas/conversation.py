@@ -7,6 +7,7 @@ class ConversationOut(BaseModel):
     title: str
     last_model: str | None = None
     last_subagent_model: str | None = None
+    context_tokens: int = 0
     created_at: datetime
     updated_at: datetime
 

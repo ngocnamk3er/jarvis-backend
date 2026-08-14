@@ -1,6 +1,6 @@
 import json
 from uuid import uuid4
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, ToolMessage
 from langgraph.types import Command
 
 from app.agents.middleware import TOOL_CALL_LIMIT_EVENT
@@ -372,6 +372,12 @@ class ChatService:
         # so the user can still see them after a reload — never read back into
         # the model's own context on later turns.
         nested_events_by_task: dict[str, list[dict]] = {}
+        # Last top-level (non-subagent) LLM call's total_tokens seen this run —
+        # overwritten, not summed, since it's meant to approximate *current*
+        # context size (see Conversation.context_tokens), not lifetime spend.
+        # A turn may call the model multiple times (tool round-trips); the
+        # last one reflects the fullest/most current view of the thread.
+        last_context_tokens: int | None = None
         try:
             async for event in graph.astream_events(graph_input, config=config, version="v2"):
                 run_id = event.get("run_id", "")
@@ -393,6 +399,9 @@ class ChatService:
                         results = [usage_event] if usage_event else None
                     else:
                         results = self._handle_token(event, parser, viz_indexes) or None
+                        for r in results or ():
+                            if r.get("type") == "usage":
+                                last_context_tokens = r["total_tokens"]
                 elif event["event"] == "on_tool_start":
                     results = self._tool_start.handle(event, task_run_id=task_run_id)
                     if task_run_id:
@@ -421,6 +430,10 @@ class ChatService:
             # After normal stream completion check for pending HITL interrupt
             state = await graph.aget_state(config)
             hitl_lines = _extract_hitl_events(state)
+
+            if last_context_tokens is not None:
+                await repository.set_context_tokens(thread_id, last_context_tokens)
+                yield f"data: {json.dumps({'type': 'context_tokens', 'tokens': last_context_tokens})}\n\n"
 
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
@@ -507,15 +520,32 @@ class ChatService:
         `model` node produced it via as_node="model", makes the graph resume
         straight into executing the tool — the same mechanism LangGraph uses
         for manual state edits/time-travel, not a hack around the library.
+
+        The trigger AIMessage + its ToolMessage result + the model's
+        follow-up wrap-up reply are scrubbed from persisted history right
+        after the run (see below) — they're an artifact of *how* compaction
+        is invoked (has to go through real tool-calling for
+        SummarizationToolMiddleware's engine to run), not a natural part of
+        the conversation. Left in place, they'd sit in state["messages"]
+        forever and get replayed to the model on every future turn, and to
+        the user on every reload — confusing, since compact_conversation
+        isn't even bound to the model outside of this one graph/run
+        (app.state.compact_graph — see build_graph()'s docstring). The
+        `_summarization_event` cutoff/summary this run recorded is untouched
+        by the scrub (it's a separate state key, not part of messages), so
+        the actual context-size reduction still fully applies going forward.
         """
         config = _make_config(thread_id, user_id, model=model, subagent_model=subagent_model)
+        trigger_id = str(uuid4())
+        tool_call_id = str(uuid4())
         await graph.aupdate_state(
             config,
             {
                 "messages": [
                     AIMessage(
+                        id=trigger_id,
                         content="",
-                        tool_calls=[{"name": "compact_conversation", "args": {}, "id": str(uuid4())}],
+                        tool_calls=[{"name": "compact_conversation", "args": {}, "id": tool_call_id}],
                     )
                 ]
             },
@@ -525,6 +555,24 @@ class ChatService:
         # (the tool call just seeded above) rather than sending new input.
         async for chunk in self._run_graph(None, config, graph):
             yield chunk
+
+        state = await graph.aget_state(config)
+        messages = state.values.get("messages", [])
+        to_remove = [trigger_id]
+        tool_msg_index = next(
+            (i for i, m in enumerate(messages) if isinstance(m, ToolMessage) and m.tool_call_id == tool_call_id),
+            None,
+        )
+        if tool_msg_index is not None:
+            to_remove.append(messages[tool_msg_index].id)
+            follow_up_index = tool_msg_index + 1
+            if follow_up_index < len(messages) and isinstance(messages[follow_up_index], AIMessage):
+                to_remove.append(messages[follow_up_index].id)
+        # trigger_id always found (we just wrote it) unless the run errored
+        # before applying the update at all — RemoveMessage on an id that
+        # was never part of state is a no-op, not an error, so this is safe
+        # to call unconditionally.
+        await graph.aupdate_state(config, {"messages": [RemoveMessage(id=mid) for mid in to_remove]})
 
 
 chat_service = ChatService()

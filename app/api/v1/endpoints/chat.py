@@ -64,7 +64,10 @@ async def chat_resume_clarify(request: ClarifyResumeRequest, req: Request, user:
 @router.post("/compact")
 async def chat_compact(request: CompactRequest, req: Request, user: CurrentUser = Depends(get_current_user)):
     await _check_owns_thread(request.thread_id, user)
-    graph = req.app.state.graph
+    # The only place compact_conversation is bound to the model — see
+    # build_graph()'s docstring for why normal chat/resume deliberately use
+    # the plain app.state.graph instead.
+    graph = req.app.state.compact_graph
     return StreamingResponse(
         chat_service.compact(request.thread_id, graph, user.sub, request.model, request.subagent_model),
         media_type="text/event-stream",

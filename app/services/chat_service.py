@@ -542,6 +542,22 @@ class ChatService:
         the actual context-size reduction still fully applies going forward.
         """
         config = _make_config(thread_id, user_id, model=model, subagent_model=subagent_model)
+
+        # SummarizationToolMiddleware._is_eligible_for_compaction only trusts
+        # usage_metadata reported on the *last* AIMessage in state (see
+        # _should_summarize_based_on_reported_tokens in langchain's
+        # summarization middleware) — it has no computed-total fallback the
+        # way the auto-trigger path does. Since this trigger message becomes
+        # the new last AIMessage the moment it's written, leaving its
+        # usage_metadata unset makes eligibility evaluate false unconditionally,
+        # regardless of the real conversation size (verified live: eligible at
+        # 30k+ real tokens still returned "nothing to compact" until this was
+        # fixed). Carrying over the real last reply's usage/provider metadata
+        # fixes that without misrepresenting anything — this trigger message
+        # is a stand-in for "current usage state", not a real model reply.
+        prior_messages = (await graph.aget_state(config)).values.get("messages", [])
+        last_ai = next((m for m in reversed(prior_messages) if isinstance(m, AIMessage)), None)
+
         trigger_id = str(uuid4())
         tool_call_id = str(uuid4())
         await graph.aupdate_state(
@@ -552,6 +568,8 @@ class ChatService:
                         id=trigger_id,
                         content="",
                         tool_calls=[{"name": "compact_conversation", "args": {}, "id": tool_call_id}],
+                        usage_metadata=last_ai.usage_metadata if last_ai else None,
+                        response_metadata=last_ai.response_metadata if last_ai else {},
                     )
                 ]
             },

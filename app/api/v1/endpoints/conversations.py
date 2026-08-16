@@ -19,7 +19,7 @@ async def create_conversation(body: ConversationCreate, user: CurrentUser = Depe
 
 @router.get("/{conversation_id}/messages")
 async def get_messages(conversation_id: str, req: Request, user: CurrentUser = Depends(get_current_user)):
-    return await conversation_service.get_messages(req.app.state.graph, conversation_id, user.sub)
+    return await conversation_service.get_messages(req.app.state.history_graph, conversation_id, user.sub)
 
 
 @router.patch("/{conversation_id}/title")

@@ -51,7 +51,12 @@ _MEMORY_TOOL_DESCRIPTIONS = {
 }
 
 
-def build_graph(checkpointer=None, store=None, include_compact_tool: bool = False):
+def build_graph(
+    checkpointer=None,
+    store=None,
+    include_compact_tool: bool = False,
+    include_tools: bool = True,
+):
     """`include_compact_tool=True` adds the `compact_conversation` tool
     (SummarizationToolMiddleware) to the returned graph — kept OFF by default
     and only turned on for the dedicated graph used by chat_service.compact()
@@ -70,18 +75,37 @@ def build_graph(checkpointer=None, store=None, include_compact_tool: bool = Fals
       is strictly user-triggered (a Compact button), never model-initiated —
       so the only reliable fix is to not bind the tool to the model at all
       during normal chat, not just avoid encouraging it.
-    Both graphs share the same checkpointer/store, so they operate on the
-    exact same persisted thread state — this works because
-    SummarizationToolMiddleware contributes only to the tool list (no
-    before_model/after_model/before_agent hook of its own, verified via
-    agent.get_graph()), so the two graphs have identical node topology and
-    state schema regardless of this flag; only the bound tool set differs.
+
+    `include_tools=False` drops the raw `tools` list below (web_search,
+    bash, viz, etc.) — for the dedicated graph used by
+    conversation_service.get_messages() (see app.state.history_graph in
+    main.py), which only ever calls graph.aget_state() to read a checkpoint.
+    aget_state() doesn't invoke the model or any node, so which tools are
+    bound to the model is irrelevant there — only the *middleware* list
+    matters, because several middleware own state-schema channels
+    (SummarizationMiddleware's `_summarization_event`, TodoListMiddleware's
+    `todos`, etc.) that must stay identical across every graph sharing this
+    checkpointer for aget_state() to deserialize a checkpoint correctly.
+    That's why this flag only touches the `tools=` argument to create_agent()
+    below and leaves the full `middleware` list untouched either way.
+
+    All graphs built here share the same checkpointer/store, so they operate
+    on the exact same persisted thread state — this works because varying
+    include_compact_tool/include_tools never changes node topology or state
+    schema (verified via agent.get_graph() for the compact-tool case; the
+    same reasoning applies to include_tools since it's just a different
+    argument to the same create_agent() call, no middleware added/removed).
     """
     summarization_middleware = SummarizationMiddleware(
         model=build_llm_with_fallback(),
         backend=StateBackend,
         trigger=("tokens", 60000),
-        keep=("messages", 20),
+        # Retain the most recent ~10k tokens of raw messages uncompacted,
+        # rather than a fixed message count — a message-count cutoff doesn't
+        # account for wildly different message sizes (a one-line reply vs. a
+        # long tool output), so it could keep too little or too much actual
+        # context depending on what those messages happen to contain.
+        keep=("tokens", 10000),
         trim_tokens_to_summarize=40000,
     )
     middleware = [
@@ -131,7 +155,7 @@ def build_graph(checkpointer=None, store=None, include_compact_tool: bool = Fals
     ]
     return create_agent(
         model=build_llm_with_fallback(),
-        tools=tools,
+        tools=tools if include_tools else [],
         system_prompt=build_system_prompt(),
         checkpointer=checkpointer,
         store=store,

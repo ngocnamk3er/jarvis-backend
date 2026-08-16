@@ -35,6 +35,13 @@ async def lifespan(app: FastAPI):
     # so normal chat never sees/pays for/can self-trigger it. See
     # build_graph()'s docstring in app/agents/graph.py.
     app.state.compact_graph = build_graph(checkpointer=checkpointer, store=store, include_compact_tool=True)
+    # No tools bound — used only for conversation_service.get_messages(),
+    # which just calls graph.aget_state() to read a checkpoint. That never
+    # invokes the model/tools, so this is functionally identical to
+    # app.state.graph for that read-only path, without paying to bind the
+    # full tool list. See build_graph()'s docstring for why this is safe to
+    # share the same checkpointer as the other two graphs above.
+    app.state.history_graph = build_graph(checkpointer=checkpointer, store=store, include_tools=False)
     cleanup_task = asyncio.create_task(_sandbox_cleanup_loop())
     yield
     cleanup_task.cancel()

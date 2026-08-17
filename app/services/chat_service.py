@@ -561,6 +561,29 @@ class ChatService:
         prior_values = prior_state.values
         prior_messages = prior_values.get("messages", [])
 
+        # Refuse while a HITL/clarify interrupt is already pending — verified
+        # live (minimal repro graph, not guessed): calling aupdate_state(...,
+        # as_node="model") on top of an unresolved interrupt does NOT error,
+        # it silently abandons the original pending tool_call (no ToolMessage
+        # ever generated for it, no re-raised interrupt for it either) and
+        # starts processing the newly-injected trigger instead. The orphaned
+        # tool_call then has no matching ToolMessage, which OpenAI-compatible
+        # APIs reject outright on the *next* real turn — breaking the thread
+        # until manually fixed. The frontend already disables the Compact
+        # button while pendingHitl/pendingClarify is set, but that's a
+        # client-side guard only (direct API calls, or a race between click
+        # and state sync, both bypass it) — this is the actual backing check.
+        # Re-emitting the same hitl_request/clarify_request the frontend
+        # would already have from the interrupted turn keeps it in sync
+        # rather than just erroring silently.
+        pending_lines = _extract_hitl_events(prior_state)
+        if pending_lines:
+            for line in pending_lines:
+                yield f"data: {line}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Cannot compact while a previous action is still awaiting approval.'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+
         # Short-circuit before touching the graph at all if we're clearly
         # under SummarizationToolMiddleware's own eligibility gate — see
         # COMPACT_ELIGIBILITY_TOKENS. Without this, an ineligible click still

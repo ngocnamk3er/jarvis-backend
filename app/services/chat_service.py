@@ -143,6 +143,20 @@ class ImplicitThinkingParser:
 # ---------------------------------------------------------------------------
 
 
+# Mirrors SummarizationToolMiddleware's own eligibility gate: ~50% of
+# graph.py's SummarizationMiddleware(trigger=("tokens", 60000)) — same
+# formula the frontend's chat-input.tsx pill uses for its amber threshold.
+# Checked ourselves in compact() *before* touching the graph at all, so an
+# ineligible click costs zero LLM calls instead of one: even the "Nothing to
+# compact yet" outcome normally still pays for the mandatory model call that
+# follows any tool execution (tools -> model is unconditional in
+# create_agent's graph). Worst case if this pre-check is ever imprecise
+# (e.g. edge cases in how the library computes its "effective" message list)
+# is a false negative that skips a real compaction — SummarizationToolMiddleware's
+# own gate is still fully intact as the actual source of truth whenever we
+# do proceed, so this can only under-trigger, never mis-compact.
+COMPACT_ELIGIBILITY_TOKENS = 30000
+
 VIZ_TOOLS = {"generate_visualization_svg"}
 TODO_TOOL = "write_todos"
 # ask_user has its own dedicated clarify_request event (see _extract_hitl_events)
@@ -543,6 +557,25 @@ class ChatService:
         """
         config = _make_config(thread_id, user_id, model=model, subagent_model=subagent_model)
 
+        prior_state = await graph.aget_state(config)
+        prior_values = prior_state.values
+        prior_messages = prior_values.get("messages", [])
+
+        # Short-circuit before touching the graph at all if we're clearly
+        # under SummarizationToolMiddleware's own eligibility gate — see
+        # COMPACT_ELIGIBILITY_TOKENS. Without this, an ineligible click still
+        # runs the tool for real (cheap — no LLM call) but then the graph's
+        # tools -> model edge is unconditional, so a mandatory *real* LLM
+        # call follows regardless of what the tool returned, just to have
+        # the model announce a no-op. context_tokens is already exactly this
+        # same "current usage" approximation (see ContextTokensMiddleware),
+        # reused here for free since we already fetched state this call.
+        current_context_tokens = prior_values.get("context_tokens", 0)
+        if current_context_tokens < COMPACT_ELIGIBILITY_TOKENS:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Nothing to compact yet — conversation is within the token budget.'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+
         # SummarizationToolMiddleware._is_eligible_for_compaction only trusts
         # usage_metadata reported on the *last* AIMessage in state (see
         # _should_summarize_based_on_reported_tokens in langchain's
@@ -555,7 +588,6 @@ class ChatService:
         # fixed). Carrying over the real last reply's usage/provider metadata
         # fixes that without misrepresenting anything — this trigger message
         # is a stand-in for "current usage state", not a real model reply.
-        prior_messages = (await graph.aget_state(config)).values.get("messages", [])
         last_ai = next((m for m in reversed(prior_messages) if isinstance(m, AIMessage)), None)
 
         trigger_id = str(uuid4())

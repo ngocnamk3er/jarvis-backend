@@ -447,12 +447,22 @@ class ChatService:
 
             if last_context_tokens is not None:
                 await repository.set_context_tokens(thread_id, last_context_tokens)
-                # Also mirrored into the checkpoint itself (ContextTokensMiddleware
-                # in app/agents/middleware.py contributes this state key) —
-                # verified live that a plain scalar key persists correctly via
-                # aupdate_state/aget_state, same last-writer-wins semantics as
-                # the Postgres column above.
-                await graph.aupdate_state(config, {"context_tokens": last_context_tokens}, as_node="model")
+                # Mirrored into the checkpoint itself too (ContextTokensMiddleware
+                # in app/agents/middleware.py contributes this state key) — but
+                # ONLY when there's no pending interrupt. Verified live: calling
+                # aupdate_state(..., as_node="model") — even for a key that has
+                # nothing to do with messages — silently clears state.interrupts
+                # for any interrupt still unresolved at that point (no error, no
+                # trace), orphaning its tool_call with no ToolMessage ever
+                # generated for it. hitl_lines was already captured above from
+                # the pre-corruption state, so this turn's hitl_request/
+                # clarify_request still reaches the frontend fine either way —
+                # but skip the checkpoint write so the *next* resume() still
+                # finds the real interrupt intact. The Postgres column is
+                # unaffected either way (plain SQL, no graph-state interaction)
+                # so it's still updated unconditionally.
+                if not hitl_lines:
+                    await graph.aupdate_state(config, {"context_tokens": last_context_tokens}, as_node="model")
                 yield f"data: {json.dumps({'type': 'context_tokens', 'tokens': last_context_tokens})}\n\n"
 
         except Exception as e:
@@ -636,6 +646,16 @@ class ChatService:
             yield chunk
 
         state = await graph.aget_state(config)
+        if state.interrupts:
+            # Vanishingly unlikely (the follow-up wrap-up reply would have to
+            # itself decide to call bash right after acknowledging the
+            # compact), but if it happens, this new interrupt is real and
+            # unresolved — skip the scrub rather than risk corrupting it the
+            # same way (see the as_node="model" note below). Leaves the
+            # trigger/tool/wrap-up messages in history uncleaned this one
+            # time; harmless, just the cosmetic issue this scrub exists to
+            # avoid.
+            return
         messages = state.values.get("messages", [])
         to_remove = [trigger_id]
         tool_msg_index = next(
@@ -651,7 +671,24 @@ class ChatService:
         # before applying the update at all — RemoveMessage on an id that
         # was never part of state is a no-op, not an error, so this is safe
         # to call unconditionally.
-        await graph.aupdate_state(config, {"messages": [RemoveMessage(id=mid) for mid in to_remove]})
+        #
+        # as_node is required here — verified live: aupdate_state on a real
+        # multi-node graph (model + tools, not a trivial single-node test
+        # graph) raises InvalidUpdateError("Ambiguous update, specify
+        # as_node") for a bare messages-only update with no as_node, since
+        # more than one node could plausibly have produced it. "model" is
+        # correct: confirmed live it removes exactly the target messages,
+        # leaves everything else untouched, and leaves state.next empty
+        # (nothing pending) afterward. Safe to use even though we don't
+        # re-enter the graph after this — this method already returned
+        # early above if a HITL/clarify interrupt was pending, so there's
+        # nothing left for as_node="model"'s routing recomputation to
+        # disturb here.
+        await graph.aupdate_state(
+            config,
+            {"messages": [RemoveMessage(id=mid) for mid in to_remove]},
+            as_node="model",
+        )
 
 
 chat_service = ChatService()

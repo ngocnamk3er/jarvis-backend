@@ -1,8 +1,10 @@
+import asyncio
 import json
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from app.agents.middleware import TOOL_CALL_LIMIT_EVENT
+from app.agents.tools.sandbox_manager import stop_container
 from app.db import repository
 from app.schemas.chat import AVAILABLE_MODELS
 
@@ -283,6 +285,31 @@ class ChatService:
     def __init__(self) -> None:
         self._tool_start = ToolStartEventHandler()
         self._tool_end = ToolEndEventHandler()
+        # thread_id -> the asyncio.Task actually driving that thread's current
+        # graph run (see _run_graph's `_drive`) — lets stop() cancel a run
+        # from a separate request without touching the ASGI/StreamingResponse
+        # task that's yielding SSE lines for it.
+        self._active_runs: dict[str, asyncio.Task] = {}
+
+    def stop(self, thread_id: str) -> bool:
+        """Cancel the in-flight run for this thread, if any.
+
+        Cancelling the asyncio task stops token/tool-event streaming
+        immediately. It does NOT, by itself, stop a `bash` call already in
+        flight: that tool is synchronous (a blocking `docker exec` — see
+        agents/tools/bash.py) and runs in a worker thread, so cancelling the
+        awaiting task only stops us from waiting on it, not the docker exec
+        itself. Force-killing the sandbox container aborts that exec
+        immediately too. The container is recreated fresh next time this
+        thread runs a tool (ensure_container_running); files persist on the
+        host bind mount, only the container process is lost.
+        """
+        task = self._active_runs.get(thread_id)
+        if task is None or task.done():
+            return False
+        task.cancel()
+        stop_container(thread_id)
+        return True
 
     @staticmethod
     def _task_tool_call_id(event: dict) -> str | None:
@@ -360,7 +387,17 @@ class ChatService:
         return events
 
     async def _run_graph(self, graph_input, config: dict, graph):
-        """Yield SSE lines by streaming graph events, then emit any HITL interrupt."""
+        """Yield SSE lines by streaming graph events, then emit any HITL interrupt.
+
+        The actual graph run (`_drive` below) executes as its own asyncio.Task
+        rather than being driven directly by this generator's `async for`.
+        That's what makes it independently cancellable via stop(): cancelling
+        `drive_task` only affects that task, leaving this generator (which is
+        what the ASGI/StreamingResponse machinery actually iterates) free to
+        keep running, notice the cancellation via the sentinel + `await
+        drive_task` below, and still yield a clean `stopped`/`done` pair
+        instead of the whole SSE response just dying mid-frame.
+        """
         parser = ThinkingParser()
         viz_indexes: set[int] = set()
         hitl_lines: list[str] = []
@@ -388,8 +425,26 @@ class ChatService:
         # A turn may call the model multiple times (tool round-trips); the
         # last one reflects the fullest/most current view of the thread.
         last_context_tokens: int | None = None
+        stopped = False
+
+        queue: asyncio.Queue = asyncio.Queue()
+        _DONE = object()
+
+        async def _drive():
+            try:
+                async for ev in graph.astream_events(graph_input, config=config, version="v2"):
+                    await queue.put(ev)
+            finally:
+                await queue.put(_DONE)
+
+        drive_task = asyncio.ensure_future(_drive())
+        self._active_runs[thread_id] = drive_task
+
         try:
-            async for event in graph.astream_events(graph_input, config=config, version="v2"):
+            while True:
+                event = await queue.get()
+                if event is _DONE:
+                    break
                 run_id = event.get("run_id", "")
                 parent_ids = event.get("parent_ids") or []
                 is_task_start = event["event"] == "on_tool_start" and event.get("name") == "task"
@@ -437,35 +492,51 @@ class ChatService:
                     for data in results:
                         yield f"data: {json.dumps(data)}\n\n"
 
-            # After normal stream completion check for pending HITL interrupt
-            state = await graph.aget_state(config)
-            hitl_lines = _extract_hitl_events(state)
+            # _drive already finished (put _DONE) by this point, but its task
+            # may not have transitioned to done/cancelled/exception state the
+            # instant that happened — await it (not just check .cancelled())
+            # to avoid that race, and to re-raise any real exception it hit.
+            try:
+                await drive_task
+            except asyncio.CancelledError:
+                stopped = True
 
-            if last_context_tokens is not None:
-                await repository.set_context_tokens(thread_id, last_context_tokens)
-                # Mirrored into the checkpoint itself too (ContextTokensMiddleware
-                # in app/agents/middleware.py contributes this state key) — but
-                # ONLY when there's no pending interrupt. Verified live: calling
-                # aupdate_state(..., as_node="model") — even for a key that has
-                # nothing to do with messages — silently clears state.interrupts
-                # for any interrupt still unresolved at that point (no error, no
-                # trace), orphaning its tool_call with no ToolMessage ever
-                # generated for it. hitl_lines was already captured above from
-                # the pre-corruption state, so this turn's hitl_request/
-                # clarify_request still reaches the frontend fine either way —
-                # but skip the checkpoint write so the *next* resume() still
-                # finds the real interrupt intact. The Postgres column is
-                # unaffected either way (plain SQL, no graph-state interaction)
-                # so it's still updated unconditionally.
-                if not hitl_lines:
-                    await graph.aupdate_state(config, {"context_tokens": last_context_tokens}, as_node="model")
-                yield f"data: {json.dumps({'type': 'context_tokens', 'tokens': last_context_tokens})}\n\n"
+            if not stopped:
+                # After normal stream completion check for pending HITL interrupt
+                state = await graph.aget_state(config)
+                hitl_lines = _extract_hitl_events(state)
+
+                if last_context_tokens is not None:
+                    await repository.set_context_tokens(thread_id, last_context_tokens)
+                    # Mirrored into the checkpoint itself too (ContextTokensMiddleware
+                    # in app/agents/middleware.py contributes this state key) — but
+                    # ONLY when there's no pending interrupt. Verified live: calling
+                    # aupdate_state(..., as_node="model") — even for a key that has
+                    # nothing to do with messages — silently clears state.interrupts
+                    # for any interrupt still unresolved at that point (no error, no
+                    # trace), orphaning its tool_call with no ToolMessage ever
+                    # generated for it. hitl_lines was already captured above from
+                    # the pre-corruption state, so this turn's hitl_request/
+                    # clarify_request still reaches the frontend fine either way —
+                    # but skip the checkpoint write so the *next* resume() still
+                    # finds the real interrupt intact. The Postgres column is
+                    # unaffected either way (plain SQL, no graph-state interaction)
+                    # so it's still updated unconditionally.
+                    if not hitl_lines:
+                        await graph.aupdate_state(config, {"context_tokens": last_context_tokens}, as_node="model")
+                    yield f"data: {json.dumps({'type': 'context_tokens', 'tokens': last_context_tokens})}\n\n"
 
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        finally:
+            if self._active_runs.get(thread_id) is drive_task:
+                del self._active_runs[thread_id]
 
-        for line in hitl_lines:
-            yield f"data: {line}\n\n"
+        if stopped:
+            yield f"data: {json.dumps({'type': 'stopped'})}\n\n"
+        else:
+            for line in hitl_lines:
+                yield f"data: {line}\n\n"
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     async def stream(

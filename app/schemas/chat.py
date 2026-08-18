@@ -92,3 +92,7 @@ class ClarifyResumeRequest(BaseModel):
     answer: str
     model: str = DEFAULT_MODEL
     subagent_model: str | None = None
+
+
+class StopRequest(BaseModel):
+    thread_id: str

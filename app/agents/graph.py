@@ -1,8 +1,5 @@
 from langchain.agents import create_agent
-from langchain.agents.middleware import (
-    HumanInTheLoopMiddleware,
-    TodoListMiddleware,
-)
+from langchain.agents.middleware import TodoListMiddleware
 from deepagents import FilesystemMiddleware, MemoryMiddleware
 from deepagents.middleware.subagents import SubAgentMiddleware
 from deepagents.backends import StateBackend
@@ -18,35 +15,31 @@ from app.agents.subagents import RESEARCH_SUBAGENT
 # deepagents version this project is pinned to (>=0.6.0 — verified against an
 # actual 0.6.11 install: its __init__ has no `tools=` parameter at all, that
 # was only added in a later 0.x release). It unconditionally creates all 7:
-# ls, read_file, write_file, edit_file, glob, grep, execute. All 7 still only
-# ever touch memory_backend (the per-user Postgres Store namespace) — never
-# the sandbox filesystem `bash` uses — so there's no functional overlap, but
+# ls, read_file, write_file, edit_file, glob, grep, execute. All 7 only ever
+# touch memory_backend (the per-user Postgres Store namespace), but
 # ls/glob/grep/execute are pointless here (there's only ever the one
 # "AGENTS.md" key, and StoreBackend doesn't implement execute at all — calling
 # it just returns an error to the model, verified: building FilesystemMiddleware
 # with a StoreBackend does not fail at construction time). Descriptions below
-# disambiguate every one of them from sandbox file operations so the model
-# doesn't confuse the two, and steer it away from the four pointless ones.
+# steer the model away from the four pointless ones.
 _MEMORY_TOOL_DESCRIPTIONS = {
     "write_file": (
         "Save a new personal-memory note about the current user (e.g. their "
-        "preferences, recurring context) as 'AGENTS.md'. This is NOT for "
-        "sandbox files — use bash for those. Persists across all of this "
-        "user's conversations."
+        "preferences, recurring context) as 'AGENTS.md'. Persists across all "
+        "of this user's conversations."
     ),
     "edit_file": (
         "Update the existing personal-memory note ('AGENTS.md') about the "
-        "current user. This is NOT for sandbox files — use bash for those."
+        "current user."
     ),
     "read_file": (
         "Read back the personal-memory note ('AGENTS.md') about the current "
-        "user before editing it. This is NOT for sandbox files — use bash "
-        "for those."
+        "user before editing it."
     ),
-    "ls": "Lists personal-memory notes — there is only ever 'AGENTS.md'. Not for sandbox files.",
-    "glob": "Searches personal-memory notes — there is only ever 'AGENTS.md', so this is rarely useful. Not for sandbox files.",
-    "grep": "Searches inside 'AGENTS.md'. For anything else, use bash instead.",
-    "execute": "Not supported for personal memory — this will always fail. Use bash for running commands.",
+    "ls": "Lists personal-memory notes — there is only ever 'AGENTS.md'.",
+    "glob": "Searches personal-memory notes — there is only ever 'AGENTS.md', so this is rarely useful.",
+    "grep": "Searches inside 'AGENTS.md'.",
+    "execute": "Not supported for personal memory — this will always fail.",
 }
 
 
@@ -56,7 +49,7 @@ def build_graph(
     include_tools: bool = True,
 ):
     """`include_tools=False` drops the raw `tools` list below (web_search,
-    bash, viz, etc.) — for the dedicated graph used by
+    viz, etc.) — for the dedicated graph used by
     conversation_service.get_messages() (see app.state.history_graph in
     main.py), which only ever calls graph.aget_state() to read a checkpoint.
     aget_state() doesn't invoke the model or any node, so which tools are
@@ -80,9 +73,6 @@ def build_graph(
         FilesystemMiddleware(
             backend=memory_backend,
             custom_tool_descriptions=_MEMORY_TOOL_DESCRIPTIONS,
-        ),
-        HumanInTheLoopMiddleware(
-            interrupt_on={"bash": {"allowed_decisions": ["approve", "reject"]}},
         ),
         TodoListMiddleware(),
         # Two-tier per-run caps (not thread-wide — resets every turn): up to

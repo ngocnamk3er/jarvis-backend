@@ -1,10 +1,20 @@
 import json
-from uuid import uuid4
-from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, ToolMessage
+from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from app.agents.middleware import TOOL_CALL_LIMIT_EVENT
 from app.db import repository
+from app.schemas.chat import AVAILABLE_MODELS
+
+# Looked up in stream() before touching the graph at all — refuses a new
+# user-initiated turn once the conversation's last-known context_tokens
+# (see Conversation.context_tokens) already reached/exceeded the selected
+# model's real context window. Only guards brand-new messages, not
+# resume()/resume_clarify() — those continue an already-in-progress turn
+# (e.g. a pending HITL approval), and blocking mid-flight risks the same
+# kind of dangling-tool_call/orphaned-interrupt problems this session's
+# interrupt-safety work went out of its way to avoid.
+_MODEL_CONTEXT_WINDOW = {m["id"]: m["contextWindow"] for m in AVAILABLE_MODELS}
 
 # ---------------------------------------------------------------------------
 # Thinking parser — splits <think>…</think> out of the content stream
@@ -142,20 +152,6 @@ class ImplicitThinkingParser:
 # Event handlers
 # ---------------------------------------------------------------------------
 
-
-# Mirrors SummarizationToolMiddleware's own eligibility gate: ~50% of
-# graph.py's SummarizationMiddleware(trigger=("tokens", 60000)) — same
-# formula the frontend's chat-input.tsx pill uses for its amber threshold.
-# Checked ourselves in compact() *before* touching the graph at all, so an
-# ineligible click costs zero LLM calls instead of one: even the "Nothing to
-# compact yet" outcome normally still pays for the mandatory model call that
-# follows any tool execution (tools -> model is unconditional in
-# create_agent's graph). Worst case if this pre-check is ever imprecise
-# (e.g. edge cases in how the library computes its "effective" message list)
-# is a false negative that skips a real compaction — SummarizationToolMiddleware's
-# own gate is still fully intact as the actual source of truth whenever we
-# do proceed, so this can only under-trigger, never mis-compact.
-COMPACT_ELIGIBILITY_TOKENS = 30000
 
 VIZ_TOOLS = {"generate_visualization_svg"}
 TODO_TOOL = "write_todos"
@@ -482,6 +478,18 @@ class ChatService:
         model: str | None = None,
         subagent_model: str | None = None,
     ):
+        context_window = _MODEL_CONTEXT_WINDOW.get(model)
+        if context_window:
+            conv = await repository.get_conversation(thread_id)
+            if conv and conv.context_tokens >= context_window:
+                message = (
+                    f"This conversation has reached {model}'s context window "
+                    f"({context_window:,} tokens). Start a new conversation to continue."
+                )
+                yield f"data: {json.dumps({'type': 'error', 'message': message})}\n\n"
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                return
+
         config = _make_config(thread_id, user_id, thinking_effort, model, subagent_model)
         async for chunk in self._run_graph(
             {"messages": [HumanMessage(content=content)]}, config, graph
@@ -531,164 +539,6 @@ class ChatService:
         config = _make_config(thread_id, user_id, model=model, subagent_model=subagent_model)
         async for chunk in self._run_graph(Command(resume=answer), config, graph):
             yield chunk
-
-    async def compact(
-        self,
-        thread_id: str,
-        graph,
-        user_id: str,
-        model: str | None = None,
-        subagent_model: str | None = None,
-    ):
-        """Force-execute the compact_conversation tool (see
-        SummarizationToolMiddleware in graph.py) without waiting for the model
-        to decide to call it — triggered by the frontend's Compact button.
-
-        LangGraph's agent graph routes model -> tools whenever the last
-        message is an AIMessage with pending tool_calls (verified via
-        agent.get_graph()). Seeding that state directly, tagged as if the
-        `model` node produced it via as_node="model", makes the graph resume
-        straight into executing the tool — the same mechanism LangGraph uses
-        for manual state edits/time-travel, not a hack around the library.
-
-        The trigger AIMessage + its ToolMessage result + the model's
-        follow-up wrap-up reply are scrubbed from persisted history right
-        after the run (see below) — they're an artifact of *how* compaction
-        is invoked (has to go through real tool-calling for
-        SummarizationToolMiddleware's engine to run), not a natural part of
-        the conversation. Left in place, they'd sit in state["messages"]
-        forever and get replayed to the model on every future turn, and to
-        the user on every reload — confusing, since compact_conversation
-        isn't even bound to the model outside of this one graph/run
-        (app.state.compact_graph — see build_graph()'s docstring). The
-        `_summarization_event` cutoff/summary this run recorded is untouched
-        by the scrub (it's a separate state key, not part of messages), so
-        the actual context-size reduction still fully applies going forward.
-        """
-        config = _make_config(thread_id, user_id, model=model, subagent_model=subagent_model)
-
-        prior_state = await graph.aget_state(config)
-        prior_values = prior_state.values
-        prior_messages = prior_values.get("messages", [])
-
-        # Refuse while a HITL/clarify interrupt is already pending — verified
-        # live (minimal repro graph, not guessed): calling aupdate_state(...,
-        # as_node="model") on top of an unresolved interrupt does NOT error,
-        # it silently abandons the original pending tool_call (no ToolMessage
-        # ever generated for it, no re-raised interrupt for it either) and
-        # starts processing the newly-injected trigger instead. The orphaned
-        # tool_call then has no matching ToolMessage, which OpenAI-compatible
-        # APIs reject outright on the *next* real turn — breaking the thread
-        # until manually fixed. The frontend already disables the Compact
-        # button while pendingHitl/pendingClarify is set, but that's a
-        # client-side guard only (direct API calls, or a race between click
-        # and state sync, both bypass it) — this is the actual backing check.
-        # Re-emitting the same hitl_request/clarify_request the frontend
-        # would already have from the interrupted turn keeps it in sync
-        # rather than just erroring silently.
-        pending_lines = _extract_hitl_events(prior_state)
-        if pending_lines:
-            for line in pending_lines:
-                yield f"data: {line}\n\n"
-            yield f"data: {json.dumps({'type': 'error', 'message': 'Cannot compact while a previous action is still awaiting approval.'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            return
-
-        # Short-circuit before touching the graph at all if we're clearly
-        # under SummarizationToolMiddleware's own eligibility gate — see
-        # COMPACT_ELIGIBILITY_TOKENS. Without this, an ineligible click still
-        # runs the tool for real (cheap — no LLM call) but then the graph's
-        # tools -> model edge is unconditional, so a mandatory *real* LLM
-        # call follows regardless of what the tool returned, just to have
-        # the model announce a no-op. context_tokens is already exactly this
-        # same "current usage" approximation (see ContextTokensMiddleware),
-        # reused here for free since we already fetched state this call.
-        current_context_tokens = prior_values.get("context_tokens", 0)
-        if current_context_tokens < COMPACT_ELIGIBILITY_TOKENS:
-            yield f"data: {json.dumps({'type': 'error', 'message': 'Nothing to compact yet — conversation is within the token budget.'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            return
-
-        # SummarizationToolMiddleware._is_eligible_for_compaction only trusts
-        # usage_metadata reported on the *last* AIMessage in state (see
-        # _should_summarize_based_on_reported_tokens in langchain's
-        # summarization middleware) — it has no computed-total fallback the
-        # way the auto-trigger path does. Since this trigger message becomes
-        # the new last AIMessage the moment it's written, leaving its
-        # usage_metadata unset makes eligibility evaluate false unconditionally,
-        # regardless of the real conversation size (verified live: eligible at
-        # 30k+ real tokens still returned "nothing to compact" until this was
-        # fixed). Carrying over the real last reply's usage/provider metadata
-        # fixes that without misrepresenting anything — this trigger message
-        # is a stand-in for "current usage state", not a real model reply.
-        last_ai = next((m for m in reversed(prior_messages) if isinstance(m, AIMessage)), None)
-
-        trigger_id = str(uuid4())
-        tool_call_id = str(uuid4())
-        await graph.aupdate_state(
-            config,
-            {
-                "messages": [
-                    AIMessage(
-                        id=trigger_id,
-                        content="",
-                        tool_calls=[{"name": "compact_conversation", "args": {}, "id": tool_call_id}],
-                        usage_metadata=last_ai.usage_metadata if last_ai else None,
-                        response_metadata=last_ai.response_metadata if last_ai else {},
-                    )
-                ]
-            },
-            as_node="model",
-        )
-        # None input resumes execution from the current checkpoint state
-        # (the tool call just seeded above) rather than sending new input.
-        async for chunk in self._run_graph(None, config, graph):
-            yield chunk
-
-        state = await graph.aget_state(config)
-        if state.interrupts:
-            # Vanishingly unlikely (the follow-up wrap-up reply would have to
-            # itself decide to call bash right after acknowledging the
-            # compact), but if it happens, this new interrupt is real and
-            # unresolved — skip the scrub rather than risk corrupting it the
-            # same way (see the as_node="model" note below). Leaves the
-            # trigger/tool/wrap-up messages in history uncleaned this one
-            # time; harmless, just the cosmetic issue this scrub exists to
-            # avoid.
-            return
-        messages = state.values.get("messages", [])
-        to_remove = [trigger_id]
-        tool_msg_index = next(
-            (i for i, m in enumerate(messages) if isinstance(m, ToolMessage) and m.tool_call_id == tool_call_id),
-            None,
-        )
-        if tool_msg_index is not None:
-            to_remove.append(messages[tool_msg_index].id)
-            follow_up_index = tool_msg_index + 1
-            if follow_up_index < len(messages) and isinstance(messages[follow_up_index], AIMessage):
-                to_remove.append(messages[follow_up_index].id)
-        # trigger_id always found (we just wrote it) unless the run errored
-        # before applying the update at all — RemoveMessage on an id that
-        # was never part of state is a no-op, not an error, so this is safe
-        # to call unconditionally.
-        #
-        # as_node is required here — verified live: aupdate_state on a real
-        # multi-node graph (model + tools, not a trivial single-node test
-        # graph) raises InvalidUpdateError("Ambiguous update, specify
-        # as_node") for a bare messages-only update with no as_node, since
-        # more than one node could plausibly have produced it. "model" is
-        # correct: confirmed live it removes exactly the target messages,
-        # leaves everything else untouched, and leaves state.next empty
-        # (nothing pending) afterward. Safe to use even though we don't
-        # re-enter the graph after this — this method already returned
-        # early above if a HITL/clarify interrupt was pending, so there's
-        # nothing left for as_node="model"'s routing recomputation to
-        # disturb here.
-        await graph.aupdate_state(
-            config,
-            {"messages": [RemoveMessage(id=mid) for mid in to_remove]},
-            as_node="model",
-        )
 
 
 chat_service = ChatService()

@@ -30,11 +30,6 @@ async def lifespan(app: FastAPI):
     checkpointer = await init_db()
     store = get_store()
     app.state.graph = build_graph(checkpointer=checkpointer, store=store)
-    # Separate graph, same checkpointer/store (so it resumes the exact same
-    # persisted thread state) — only this one has compact_conversation bound,
-    # so normal chat never sees/pays for/can self-trigger it. See
-    # build_graph()'s docstring in app/agents/graph.py.
-    app.state.compact_graph = build_graph(checkpointer=checkpointer, store=store, include_compact_tool=True)
     # No tools bound — used only for conversation_service.get_messages(),
     # which just calls graph.aget_state() to read a checkpoint. That never
     # invokes the model/tools, so this is functionally identical to

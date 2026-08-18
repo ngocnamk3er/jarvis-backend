@@ -54,11 +54,11 @@ from typing import Literal
 # Qwen/Qwen3.5-9B all resolved to real, fetchable repos; qwen3.7-plus and
 # claude-opus-4.8 both returned null there).
 AVAILABLE_MODELS = [
-    {"id": "deepseek/deepseek-v4-flash",  "name": "DeepSeek Flash",     "desc": "Fast, cost-effective MoE",        "inputPrice": "$0.09",  "outputPrice": "$0.18",  "context": "1M",  "size": "13B active / 284B total", "default": True, "effortOptions": ["none", "high", "xhigh"], "huggingFaceId": "deepseek-ai/DeepSeek-V4-Flash"},
-    {"id": "qwen/qwen3.5-9b",             "name": "Qwen 3.5 9B",        "desc": "Compact, efficient multimodal",   "inputPrice": "$0.10",  "outputPrice": "$0.15",  "context": "262K", "size": "9B", "effortOptions": ["none", "high"], "huggingFaceId": "Qwen/Qwen3.5-9B"},
-    {"id": "qwen/qwen3.7-plus",           "name": "Qwen 3.7+",          "desc": "High quality",                     "inputPrice": "$0.32",  "outputPrice": "$1.28",  "context": "1M",  "size": "Undisclosed", "effortOptions": ["none", "high"], "huggingFaceId": None},
-    {"id": "deepseek/deepseek-v4-pro",    "name": "DeepSeek Pro",       "desc": "Advanced reasoning, coding, agents", "inputPrice": "$0.435", "outputPrice": "$0.87",  "context": "1M", "size": "49B active / 1.6T total", "effortOptions": ["none", "high", "xhigh"], "huggingFaceId": "deepseek-ai/DeepSeek-V4-Pro"},
-    {"id": "anthropic/claude-opus-4.8",   "name": "Claude Opus 4.8",    "desc": "Frontier reasoning",               "inputPrice": "$1.70",  "outputPrice": "$25.00", "context": "1M", "size": "Undisclosed", "effortOptions": ["none", "low", "medium", "high", "xhigh"], "huggingFaceId": None},
+    {"id": "deepseek/deepseek-v4-flash",  "name": "DeepSeek Flash",     "desc": "Fast, cost-effective MoE",        "inputPrice": "$0.09",  "outputPrice": "$0.18",  "context": "1M",  "contextWindow": 1_000_000, "size": "13B active / 284B total", "default": True, "effortOptions": ["none", "high", "xhigh"], "huggingFaceId": "deepseek-ai/DeepSeek-V4-Flash"},
+    {"id": "qwen/qwen3.5-9b",             "name": "Qwen 3.5 9B",        "desc": "Compact, efficient multimodal",   "inputPrice": "$0.10",  "outputPrice": "$0.15",  "context": "262K", "contextWindow": 262_000, "size": "9B", "effortOptions": ["none", "high"], "huggingFaceId": "Qwen/Qwen3.5-9B"},
+    {"id": "qwen/qwen3.7-plus",           "name": "Qwen 3.7+",          "desc": "High quality",                     "inputPrice": "$0.32",  "outputPrice": "$1.28",  "context": "1M",  "contextWindow": 1_000_000, "size": "Undisclosed", "effortOptions": ["none", "high"], "huggingFaceId": None},
+    {"id": "deepseek/deepseek-v4-pro",    "name": "DeepSeek Pro",       "desc": "Advanced reasoning, coding, agents", "inputPrice": "$0.435", "outputPrice": "$0.87",  "context": "1M", "contextWindow": 1_000_000, "size": "49B active / 1.6T total", "effortOptions": ["none", "high", "xhigh"], "huggingFaceId": "deepseek-ai/DeepSeek-V4-Pro"},
+    {"id": "anthropic/claude-opus-4.8",   "name": "Claude Opus 4.8",    "desc": "Frontier reasoning",               "inputPrice": "$1.70",  "outputPrice": "$25.00", "context": "1M", "contextWindow": 1_000_000, "size": "Undisclosed", "effortOptions": ["none", "low", "medium", "high", "xhigh"], "huggingFaceId": None},
 ]
 
 DEFAULT_MODEL = next(m["id"] for m in AVAILABLE_MODELS if m.get("default"))
@@ -90,11 +90,5 @@ class ResumeRequest(BaseModel):
 class ClarifyResumeRequest(BaseModel):
     thread_id: str
     answer: str
-    model: str = DEFAULT_MODEL
-    subagent_model: str | None = None
-
-
-class CompactRequest(BaseModel):
-    thread_id: str
     model: str = DEFAULT_MODEL
     subagent_model: str | None = None

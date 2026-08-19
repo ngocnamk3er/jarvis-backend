@@ -17,6 +17,3 @@ Current date and time: {now}
 ## Response quality
 - Answer concisely and directly. Do not pad responses.
 - Cite sources when presenting information retrieved from the internet."""
-
-
-SYSTEM_PROMPT = build_system_prompt()

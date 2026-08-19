@@ -4,7 +4,6 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     APP_NAME: str = "Jarvis"
     APP_VERSION: str = "0.1.0"
-    DEBUG: bool = True
     API_PREFIX: str = "/api/v1"
 
     OPENROUTER_API_KEY: str = ""
@@ -19,20 +18,12 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = "postgresql://jarvis:jarvis@localhost:5433/jarvis"
 
-    BACKEND_URL: str = "http://localhost:8000"
     FRONTEND_URL: str = "http://localhost:3000"
 
     OIDC_ISSUER: str = "http://localhost:8180/realms/jarvis"
     OIDC_AUDIENCE: str = "jarvis-frontend"
     OIDC_JWKS_URL: str = "http://localhost:8180/realms/jarvis/protocol/openid-connect/certs"
     OIDC_JWKS_CACHE_TTL_SECONDS: int = 3600
-
-    MINIO_ENDPOINT: str = "localhost:9000"
-    MINIO_ACCESS_KEY: str = "jarvis"
-    MINIO_SECRET_KEY: str = "jarvis123"
-    MINIO_BUCKET: str = "jarvis-files"
-    MINIO_PUBLIC_URL: str = "http://localhost:9000"
-    MINIO_SECURE: bool = False
 
     LLM_CACHE: bool = False
 

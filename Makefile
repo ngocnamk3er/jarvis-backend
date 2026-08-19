@@ -3,7 +3,7 @@ PYTHON := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 UVICORN := $(VENV)/bin/uvicorn
 
-.PHONY: install install-browser run dev shell build-sandbox migrate migration
+.PHONY: install install-browser run dev shell migrate migration
 
 install:
 	python3 -m venv $(VENV)
@@ -20,9 +20,6 @@ dev:
 
 shell:
 	$(PYTHON)
-
-build-sandbox:
-	docker build -f Dockerfile.sandbox -t jarvis-sandbox .
 
 migrate:
 	$(VENV)/bin/alembic upgrade head

@@ -32,8 +32,7 @@ class ThinkingParser:
     `additional_kwargs.get("reasoning")` check) — chunk.content never contains
     <think>/</think> for any of them, so this just passes content through
     unchanged. Kept for a future model that inlines <think>...</think> in
-    content instead of using a dedicated field. If that model only emits the
-    closing tag with no opening one, use ImplicitThinkingParser instead."""
+    content instead of using a dedicated field."""
 
     _OPEN = "<think>"
     _CLOSE = "</think>"
@@ -88,65 +87,6 @@ class ThinkingParser:
                     )
                     self._buf = ""
                 return events
-
-
-class ImplicitThinkingParser:
-    """State machine for models that start in thinking mode implicitly (no
-    opening tag) and signal the end of thinking with a single </think> —
-    e.g. some DeepSeek-R1 deployments. Unlike ThinkingParser, there's no
-    <think> to wait for: every token is thinking_token until </think> is
-    seen once, then everything after is the final answer. Not wired into
-    _run_graph() by default — swap in for ThinkingParser if a configured
-    model streams reasoning this way.
-
-    reasoning_enabled must reflect whether reasoning was actually requested
-    for this turn (e.g. thinking_effort != "none"). If reasoning is off, the
-    model streams straight to its answer with no </think> at all — starting
-    in_thinking=True in that case would misclassify the entire response as
-    thinking_token forever, since the closing tag never arrives.
-    """
-
-    _CLOSE = "</think>"
-
-    def __init__(self, reasoning_enabled: bool = True):
-        self.in_thinking = reasoning_enabled
-        self._buf = ""
-
-    def feed(self, text: str) -> list[dict]:
-        self._buf += text
-        events: list[dict] = []
-
-        if not self.in_thinking:
-            if self._buf:
-                events.append({"type": "token", "content": self._buf})
-                self._buf = ""
-            return events
-
-        idx = self._buf.find(self._CLOSE)
-        if idx != -1:
-            content = self._buf[:idx]
-            if content:
-                events.append({"type": "thinking_token", "content": content})
-            rest = self._buf[idx + len(self._CLOSE):]
-            self.in_thinking = False
-            self._buf = ""
-            if rest:
-                events.append({"type": "token", "content": rest})
-            return events
-
-        # Hold back any bytes that could be the start of </think>
-        for i in range(1, len(self._CLOSE)):
-            if self._buf.endswith(self._CLOSE[:i]):
-                safe = self._buf[:-i]
-                if safe:
-                    events.append({"type": "thinking_token", "content": safe})
-                self._buf = self._buf[-i:]
-                return events
-
-        if self._buf:
-            events.append({"type": "thinking_token", "content": self._buf})
-            self._buf = ""
-        return events
 
 
 # ---------------------------------------------------------------------------

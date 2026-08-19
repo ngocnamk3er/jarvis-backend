@@ -1,0 +1,9 @@
+.venv
+venv
+__pycache__
+*.pyc
+.env
+.env.*
+data
+Dockerfile.sandbox
+.langchain_cache.db

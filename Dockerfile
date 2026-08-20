@@ -2,6 +2,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# This host's IPv6 path is broken (confirmed: `curl -6` fails outright,
+# `curl -4` succeeds instantly) — glibc's resolver still races an IPv6
+# attempt first by default and eats the whole timeout budget before
+# falling back, intermittently killing pip/apt downloads mid-build.
+# Standard fix: make getaddrinfo prefer IPv4-mapped addresses.
+RUN echo "precedence ::ffff:0:0/96  100" >> /etc/gai.conf
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*

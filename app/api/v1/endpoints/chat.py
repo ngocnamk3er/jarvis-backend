@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import CurrentUser, get_current_user
-from app.schemas.chat import ChatRequest, ClarifyResumeRequest, StopRequest, AVAILABLE_MODELS
+from app.schemas.chat import ChatRequest, ResumeRequest, ClarifyResumeRequest, StopRequest, AVAILABLE_MODELS
 from app.services.chat_service import chat_service
 from app.db import repository
 
@@ -39,10 +39,21 @@ async def chat_stream(request: ChatRequest, req: Request, user: CurrentUser = De
     )
 
 
+@router.post("/resume")
+async def chat_resume(request: ResumeRequest, req: Request, user: CurrentUser = Depends(get_current_user)):
+    await _check_owns_thread(request.thread_id, user)
+    graph = req.app.state.graph
+    await repository.touch_conversation(request.thread_id, request.model, request.subagent_model)
+    return StreamingResponse(
+        chat_service.resume(request.thread_id, request.decision, graph, user.sub, request.model, request.subagent_model),
+        media_type="text/event-stream",
+    )
+
+
 @router.post("/stop")
 async def chat_stop(request: StopRequest, req: Request, user: CurrentUser = Depends(get_current_user)):
     await _check_owns_thread(request.thread_id, user)
-    stopped = chat_service.stop(request.thread_id)
+    stopped = await chat_service.stop(request.thread_id)
     return {"stopped": stopped}
 
 

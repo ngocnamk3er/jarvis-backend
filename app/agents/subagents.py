@@ -1,13 +1,14 @@
 """Sub-agent specs for the `task` tool (deepagents' SubAgentMiddleware)."""
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import TodoListMiddleware
+from langchain.agents.middleware import HumanInTheLoopMiddleware, TodoListMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent
 
 from app.agents.llm import build_llm_with_fallback
 from app.agents.middleware import SoftHardToolCallLimitMiddleware
 from app.agents.tools.web_search import web_search
 from app.agents.tools.web_fetch import web_fetch
+from app.agents.tools.bash import bash
 from app.agents.tools.generate_visualization_svg import generate_visualization_svg
 
 _RESEARCH_SYSTEM_PROMPT = """You are a research subagent. The calling agent only sees your final
@@ -19,6 +20,10 @@ self-contained report.
   topic has multiple independent angles
 - `web_fetch` — read the full content of a specific URL as markdown; never fetch the same URL
   twice (not even with a different #anchor — anchors don't change what's returned)
+- `bash` — only for processing data you already fetched (e.g. parsing a downloaded CSV, running a
+  calculation over numbers found during research). Every call pauses for human approval before it
+  runs, same as the main agent's `bash` — don't reach for it unless a search/fetch result actually
+  needs computation.
 - `generate_visualization_svg` — render a chart/diagram of your findings if the task asks for one.
 
 ## Workflow
@@ -50,7 +55,7 @@ RESEARCH_SUBAGENT: CompiledSubAgent = {
     ),
     "runnable": create_agent(
         model=build_llm_with_fallback(is_subagent_model=True),
-        tools=[web_search, web_fetch, generate_visualization_svg],
+        tools=[web_search, web_fetch, bash, generate_visualization_svg],
         system_prompt=_RESEARCH_SYSTEM_PROMPT,
         name="research",
         # Caps each subagent *instance's* own tool use — independent of, and in
@@ -67,7 +72,15 @@ RESEARCH_SUBAGENT: CompiledSubAgent = {
                 tool_name="web_fetch", soft_limit=10, hard_limit=12
             ),
             SoftHardToolCallLimitMiddleware(
+                tool_name="bash", soft_limit=5, hard_limit=7
+            ),
+            SoftHardToolCallLimitMiddleware(
                 tool_name="generate_visualization_svg", soft_limit=3, hard_limit=5
+            ),
+            # Appended last to match deepagents' own raw-SubAgent ordering
+            # (it appends this after any custom middleware from the spec).
+            HumanInTheLoopMiddleware(
+                interrupt_on={"bash": {"allowed_decisions": ["approve", "reject"]}}
             ),
         ],
     ),

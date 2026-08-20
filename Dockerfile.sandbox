@@ -1,0 +1,26 @@
+FROM python:3.11-slim
+
+# System dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc g++ \
+        fonts-dejavu-core fonts-liberation \
+        curl wget git jq \
+        libxml2-dev libxslt-dev libjpeg-dev libpng-dev \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# General Python libraries — split into smaller layers so a network
+# blip on one group doesn't force re-downloading everything, and add
+# generous timeout/retries to tolerate a slow/flaky connection.
+ENV PIP_DEFAULT_TIMEOUT=300 \
+    PIP_RETRIES=10
+
+RUN pip install --no-cache-dir numpy pandas scipy statsmodels
+RUN pip install --no-cache-dir matplotlib seaborn plotly kaleido
+RUN pip install --no-cache-dir scikit-learn xgboost lightgbm nltk
+RUN pip install --no-cache-dir requests httpx beautifulsoup4 lxml
+RUN pip install --no-cache-dir openpyxl xlrd python-docx reportlab fpdf2 pillow svgwrite
+RUN pip install --no-cache-dir yfinance
+RUN pip install --no-cache-dir tqdm rich tabulate pyyaml toml python-dateutil pytz regex
+
+# uv — fast package manager, available for the agent to use ad hoc
+RUN pip install --no-cache-dir uv

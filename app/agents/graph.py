@@ -1,46 +1,13 @@
 from langchain.agents import create_agent
-from langchain.agents.middleware import TodoListMiddleware
-from deepagents import FilesystemMiddleware, MemoryMiddleware
+from langchain.agents.middleware import HumanInTheLoopMiddleware, TodoListMiddleware
 from deepagents.middleware.subagents import SubAgentMiddleware
 from deepagents.backends import StateBackend
 
 from app.agents.llm import build_llm_with_fallback
-from app.agents.memory import memory_backend
 from app.agents.middleware import ContextTokensMiddleware, SoftHardToolCallLimitMiddleware
 from app.agents.prompt import build_system_prompt
 from app.agents.tools import tools
 from app.agents.subagents import RESEARCH_SUBAGENT
-
-# FilesystemMiddleware has no way to restrict which tools it registers on the
-# deepagents version this project is pinned to (>=0.6.0 — verified against an
-# actual 0.6.11 install: its __init__ has no `tools=` parameter at all, that
-# was only added in a later 0.x release). It unconditionally creates all 7:
-# ls, read_file, write_file, edit_file, glob, grep, execute. All 7 only ever
-# touch memory_backend (the per-user Postgres Store namespace), but
-# ls/glob/grep/execute are pointless here (there's only ever the one
-# "AGENTS.md" key, and StoreBackend doesn't implement execute at all — calling
-# it just returns an error to the model, verified: building FilesystemMiddleware
-# with a StoreBackend does not fail at construction time). Descriptions below
-# steer the model away from the four pointless ones.
-_MEMORY_TOOL_DESCRIPTIONS = {
-    "write_file": (
-        "Save a new personal-memory note about the current user (e.g. their "
-        "preferences, recurring context) as 'AGENTS.md'. Persists across all "
-        "of this user's conversations."
-    ),
-    "edit_file": (
-        "Update the existing personal-memory note ('AGENTS.md') about the "
-        "current user."
-    ),
-    "read_file": (
-        "Read back the personal-memory note ('AGENTS.md') about the current "
-        "user before editing it."
-    ),
-    "ls": "Lists personal-memory notes — there is only ever 'AGENTS.md'.",
-    "glob": "Searches personal-memory notes — there is only ever 'AGENTS.md', so this is rarely useful.",
-    "grep": "Searches inside 'AGENTS.md'.",
-    "execute": "Not supported for personal memory — this will always fail.",
-}
 
 
 def build_graph(
@@ -48,7 +15,7 @@ def build_graph(
     store=None,
     include_tools: bool = True,
 ):
-    """`include_tools=False` drops the raw `tools` list below (web_search,
+    """`include_tools=False` drops the raw `tools` list below (bash, web_search,
     viz, etc.) — for the dedicated graph used by
     conversation_service.get_messages() (see app.state.history_graph in
     main.py), which only ever calls graph.aget_state() to read a checkpoint.
@@ -69,10 +36,8 @@ def build_graph(
     """
     middleware = [
         ContextTokensMiddleware(),
-        MemoryMiddleware(backend=memory_backend, sources=["AGENTS.md"]),
-        FilesystemMiddleware(
-            backend=memory_backend,
-            custom_tool_descriptions=_MEMORY_TOOL_DESCRIPTIONS,
+        HumanInTheLoopMiddleware(
+            interrupt_on={"bash": {"allowed_decisions": ["approve", "reject"]}},
         ),
         TodoListMiddleware(),
         # Two-tier per-run caps (not thread-wide — resets every turn): up to

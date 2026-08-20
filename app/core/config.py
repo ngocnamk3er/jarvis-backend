@@ -27,6 +27,12 @@ class Settings(BaseSettings):
 
     LLM_CACHE: bool = False
 
+    # OpenSandbox server (see backend/Makefile's sandbox-server target) —
+    # backs the bash tool's per-conversation sandboxes.
+    SANDBOX_SERVER_DOMAIN: str = "localhost:8080"
+    SANDBOX_API_KEY: str = ""
+    SANDBOX_IMAGE: str = "jarvis-sandbox"
+
     class Config:
         env_file = ".env"
         case_sensitive = True

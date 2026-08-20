@@ -4,6 +4,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from app.agents.middleware import TOOL_CALL_LIMIT_EVENT
+from app.agents.tools.sandbox_manager import stop_sandbox
 from app.db import repository
 from app.schemas.chat import AVAILABLE_MODELS
 
@@ -11,10 +12,10 @@ from app.schemas.chat import AVAILABLE_MODELS
 # user-initiated turn once the conversation's last-known context_tokens
 # (see Conversation.context_tokens) already reached/exceeded the selected
 # model's real context window. Only guards brand-new messages, not
-# resume_clarify() — that continues an already-in-progress turn (a pending
-# ask_user clarify interrupt), and blocking mid-flight risks the same kind
-# of dangling-tool_call/orphaned-interrupt problems this session's
-# interrupt-safety work went out of its way to avoid.
+# resume()/resume_clarify() — those continue an already-in-progress turn (a
+# pending bash-approval or ask_user clarify interrupt), and blocking
+# mid-flight risks the same kind of dangling-tool_call/orphaned-interrupt
+# problems this session's interrupt-safety work went out of its way to avoid.
 _MODEL_CONTEXT_WINDOW = {m["id"]: m["contextWindow"] for m in AVAILABLE_MODELS}
 
 # ---------------------------------------------------------------------------
@@ -96,7 +97,7 @@ class ThinkingParser:
 
 VIZ_TOOLS = {"generate_visualization_svg"}
 TODO_TOOL = "write_todos"
-# ask_user has its own dedicated clarify_request event (see _extract_clarify_events)
+# ask_user has its own dedicated clarify_request event (see _extract_hitl_events)
 # instead of a generic tool badge — the interrupt it raises means its tool_end
 # never fires in this streaming pass anyway (see resume_clarify's docstring).
 HIDDEN_TOOLS = {"write_todos", "ask_user"}
@@ -189,15 +190,24 @@ def _make_config(
     }
 
 
-def _extract_clarify_events(state) -> list[str]:
-    """Return serialised clarify_request SSE lines for any pending interrupts —
-    the ask_user tool's own raw interrupt() call ("question" in the interrupt
-    value), resumed via /chat/resume_clarify with a bare Command(resume=<answer>).
+def _extract_hitl_events(state) -> list[str]:
+    """Return serialised hitl_request/clarify_request SSE lines for any pending
+    interrupts — two different shapes share the same graph.aget_state().interrupts
+    list: HumanInTheLoopMiddleware's bash approval ("action_requests") and the
+    ask_user tool's own raw interrupt() call ("question"), each resumed via a
+    different endpoint (/chat/resume vs /chat/resume_clarify) since they expect
+    different Command(resume=...) payload shapes.
     """
     events = []
     for interrupt in getattr(state, "interrupts", ()):
         value = interrupt.value
-        if isinstance(value, dict) and "question" in value:
+        if isinstance(value, dict) and "action_requests" in value:
+            events.append(json.dumps({
+                "type": "hitl_request",
+                "actions": value["action_requests"],
+                "review_configs": value.get("review_configs", []),
+            }))
+        elif isinstance(value, dict) and "question" in value:
             events.append(json.dumps({
                 "type": "clarify_request",
                 "question": value["question"],
@@ -221,16 +231,23 @@ class ChatService:
         # task that's yielding SSE lines for it.
         self._active_runs: dict[str, asyncio.Task] = {}
 
-    def stop(self, thread_id: str) -> bool:
+    async def stop(self, thread_id: str) -> bool:
         """Cancel the in-flight run for this thread, if any.
 
         Cancelling the asyncio task stops token/tool-event streaming
-        immediately.
+        immediately. It does NOT, by itself, stop a `bash` call already in
+        flight — that awaits OpenSandbox's own command execution, and
+        cancelling the awaiting task only stops us from waiting on the
+        result, not the sandbox-side execution itself. Killing the sandbox
+        aborts that execution too. A fresh sandbox is created next time this
+        thread runs a tool (ensure_sandbox); nothing on it persists once
+        killed.
         """
         task = self._active_runs.get(thread_id)
         if task is None or task.done():
             return False
         task.cancel()
+        await stop_sandbox(thread_id)
         return True
 
     @staticmethod
@@ -309,7 +326,7 @@ class ChatService:
         return events
 
     async def _run_graph(self, graph_input, config: dict, graph):
-        """Yield SSE lines by streaming graph events, then emit any pending clarify interrupt.
+        """Yield SSE lines by streaming graph events, then emit any pending HITL interrupt.
 
         The actual graph run (`_drive` below) executes as its own asyncio.Task
         rather than being driven directly by this generator's `async for`.
@@ -322,7 +339,7 @@ class ChatService:
         """
         parser = ThinkingParser()
         viz_indexes: set[int] = set()
-        clarify_lines: list[str] = []
+        hitl_lines: list[str] = []
         thread_id = config["configurable"]["thread_id"]
         # Maps every run_id inside a `task` subagent's execution tree back to
         # the run_id of the specific `task` call it descends from — lets the
@@ -424,28 +441,44 @@ class ChatService:
                 stopped = True
 
             if not stopped:
-                # After normal stream completion check for a pending clarify interrupt
+                # After normal stream completion check for a pending HITL interrupt
                 state = await graph.aget_state(config)
-                clarify_lines = _extract_clarify_events(state)
+                hitl_lines = _extract_hitl_events(state)
 
                 if last_context_tokens is not None:
                     await repository.set_context_tokens(thread_id, last_context_tokens)
                     # Mirrored into the checkpoint itself too (ContextTokensMiddleware
                     # in app/agents/middleware.py contributes this state key) — but
                     # ONLY when there's no pending interrupt. Verified live: calling
-                    # aupdate_state(..., as_node="model") — even for a key that has
-                    # nothing to do with messages — silently clears state.interrupts
-                    # for any interrupt still unresolved at that point (no error, no
-                    # trace), orphaning its tool_call with no ToolMessage ever
-                    # generated for it. clarify_lines was already captured above from
-                    # the pre-corruption state, so this turn's clarify_request still
-                    # reaches the frontend fine either way — but skip the checkpoint
-                    # write so the *next* resume_clarify() still finds the real
-                    # interrupt intact. The Postgres column is unaffected either way
-                    # (plain SQL, no graph-state interaction) so it's still updated
+                    # aupdate_state(..., as_node=...) at all — even with as_node
+                    # omitted, not just as_node="model" — silently clears
+                    # state.interrupts for any interrupt still unresolved at that
+                    # point (no error, no trace), orphaning its tool_call with no
+                    # ToolMessage ever generated for it. hitl_lines was already
+                    # captured above from the pre-corruption state, so this turn's
+                    # hitl_request/clarify_request still reaches the frontend fine
+                    # either way — but skip the checkpoint write so the *next*
+                    # resume()/resume_clarify() still finds the real interrupt
+                    # intact. The Postgres column is unaffected either way (plain
+                    # SQL, no graph-state interaction) so it's still updated
                     # unconditionally.
-                    if not clarify_lines:
-                        await graph.aupdate_state(config, {"context_tokens": last_context_tokens}, as_node="model")
+                    #
+                    # as_node deliberately omitted (not "model"): passing
+                    # as_node="model" makes LangGraph treat this update as if the
+                    # model node had just run, which reschedules the *entire*
+                    # after_model middleware chain as state.next — even though
+                    # that chain already ran for real earlier this turn. Verified
+                    # live: a fully-completed, non-interrupted turn ended up with
+                    # state.next == ('SoftHardToolCallLimitMiddleware[task].after_model',)
+                    # after this call, which conversation_service.get_messages()
+                    # reads as `is_pending=True`, making every single reload show
+                    # a spurious "Response was interrupted" banner. Omitting
+                    # as_node lets LangGraph infer "the last node that updated
+                    # the state" instead (per aupdate_state's own docstring),
+                    # which correctly leaves state.next empty for a truly-finished
+                    # turn.
+                    if not hitl_lines:
+                        await graph.aupdate_state(config, {"context_tokens": last_context_tokens})
                     yield f"data: {json.dumps({'type': 'context_tokens', 'tokens': last_context_tokens})}\n\n"
 
         except Exception as e:
@@ -457,7 +490,7 @@ class ChatService:
         if stopped:
             yield f"data: {json.dumps({'type': 'stopped'})}\n\n"
         else:
-            for line in clarify_lines:
+            for line in hitl_lines:
                 yield f"data: {line}\n\n"
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
@@ -489,6 +522,36 @@ class ChatService:
         ):
             yield chunk
 
+    async def resume(
+        self,
+        thread_id: str,
+        decision: str,
+        graph,
+        user_id: str,
+        model: str | None = None,
+        subagent_model: str | None = None,
+    ):
+        """Resume a bash-approval HITL interrupt. HumanInTheLoopMiddleware
+        expects a list of one decision dict per pending action_request —
+        the same decision ("approve"/"reject") is applied to every pending
+        action in this batch (no per-action granularity in the UI)."""
+        config = _make_config(thread_id, user_id, model=model, subagent_model=subagent_model)
+
+        # Count pending action_requests so we send exactly N decisions
+        n = 1
+        state = await graph.aget_state(config)
+        for interrupt in getattr(state, "interrupts", ()):
+            value = interrupt.value
+            if isinstance(value, dict) and "action_requests" in value:
+                n = len(value["action_requests"])
+                break
+
+        decisions = [{"type": decision}] * n
+        async for chunk in self._run_graph(
+            Command(resume={"decisions": decisions}), config, graph
+        ):
+            yield chunk
+
     async def resume_clarify(
         self,
         thread_id: str,
@@ -498,10 +561,10 @@ class ChatService:
         model: str | None = None,
         subagent_model: str | None = None,
     ):
-        """Resume an ask_user interrupt. The Command's resume value is the raw
-        answer string itself — ask_user's interrupt() call returns exactly
-        whatever value Command(resume=...) carries, since it's a bare
-        langgraph interrupt(), not a decisions-list protocol."""
+        """Resume an ask_user interrupt. Unlike resume() above, the Command's
+        resume value is the raw answer string itself — ask_user's interrupt()
+        call returns exactly whatever value Command(resume=...) carries, since
+        it's a bare langgraph interrupt(), not a decisions-list protocol."""
         config = _make_config(thread_id, user_id, model=model, subagent_model=subagent_model)
         async for chunk in self._run_graph(Command(resume=answer), config, graph):
             yield chunk

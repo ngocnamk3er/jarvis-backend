@@ -4,6 +4,7 @@ __pycache__/
 .env
 .venv/
 venv/
+.opensandbox-venv/
 dist/
 build/
 .pytest_cache/

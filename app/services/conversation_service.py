@@ -1,6 +1,7 @@
 from fastapi import HTTPException
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
+from app.agents.tools.sandbox_manager import stop_sandbox
 from app.db import repository
 
 
@@ -170,6 +171,7 @@ async def create_conversation(title: str, user_id: str):
 
 async def delete_conversation(graph, conversation_id: str, user_id: str) -> None:
     await _get_owned_conversation(conversation_id, user_id)
+    await stop_sandbox(conversation_id)
     await repository.delete_conversation(conversation_id)
 
 

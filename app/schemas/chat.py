@@ -76,6 +76,13 @@ class ChatRequest(BaseModel):
     subagent_model: str | None = None
 
 
+class ResumeRequest(BaseModel):
+    thread_id: str
+    decision: str
+    model: str = DEFAULT_MODEL
+    subagent_model: str | None = None
+
+
 class ClarifyResumeRequest(BaseModel):
     thread_id: str
     answer: str

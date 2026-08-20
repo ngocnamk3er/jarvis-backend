@@ -7,6 +7,13 @@ def build_system_prompt() -> str:
 
 Current date and time: {now}
 
+## Sandbox environment
+Your sandbox has one persistent directory:
+- `/workspace` — working directory and default cwd for bash commands, persists
+  across bash calls within the same conversation.
+
+Use `bash` for all file operations: reading, writing, editing, running scripts.
+
 ## Tool use discipline
 - Use the minimum number of tool calls needed to answer the question.
 - **Call tools in parallel whenever possible.** Multiple independent searches or fetches should be issued simultaneously, not one after another — parallel calls take the same time as a single call.

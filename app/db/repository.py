@@ -14,6 +14,7 @@ def _conversation_dict(c: Conversation) -> dict:
         "last_model": c.last_model,
         "last_subagent_model": c.last_subagent_model,
         "context_tokens": c.context_tokens,
+        "sandbox_session_id": c.sandbox_session_id,
         "created_at": c.created_at,
         "updated_at": c.updated_at,
     }
@@ -74,6 +75,17 @@ async def set_context_tokens(thread_id: str, tokens: int) -> None:
     async with get_sessionmaker()() as session:
         await session.execute(
             update(Conversation).where(Conversation.id == thread_id).values(context_tokens=tokens, updated_at=func.now())
+        )
+        await session.commit()
+
+
+async def set_sandbox_session_id(thread_id: str, session_id: str | None) -> None:
+    """Persist (or clear) the OpenSandbox isolation-session ID backing this
+    conversation's bash sandbox, so any process can reattach via
+    sandbox_manager.ensure_session()."""
+    async with get_sessionmaker()() as session:
+        await session.execute(
+            update(Conversation).where(Conversation.id == thread_id).values(sandbox_session_id=session_id)
         )
         await session.commit()
 

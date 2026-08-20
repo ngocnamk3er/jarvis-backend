@@ -23,6 +23,10 @@ class Conversation(Base):
     # chat_service._run_graph. Drops after a Compact run since the follow-up
     # model call that closes out the tool turn sees the now-trimmed context.
     context_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    # OpenSandbox isolation-session ID for this conversation's bash sandbox
+    # (see sandbox_manager.py). Persisted so any process can reattach to the
+    # same session on the shared host pod via sandbox.isolation.attach(...).
+    sandbox_session_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

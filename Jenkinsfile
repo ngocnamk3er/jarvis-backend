@@ -43,7 +43,7 @@ pipeline {
         withCredentials([usernamePassword(credentialsId: 'gitlab-repo', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_TOKEN')]) {
           sh '''
             rm -rf deploy-repo
-            git clone http://gitlab:8929/root/jarvis-deploy.git deploy-repo
+            git clone "http://${GIT_USER}:${GIT_TOKEN}@gitlab:8929/root/jarvis-deploy.git" deploy-repo
             cd deploy-repo
             kustomize edit set image jarvis-backend=host.minikube.internal:5050/root/jarvis-backend:${IMAGE_TAG}
             git config user.email "jenkins@localhost"

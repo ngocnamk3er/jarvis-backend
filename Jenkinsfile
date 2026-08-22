@@ -45,7 +45,7 @@ pipeline {
             rm -rf deploy-repo
             git clone "http://${GIT_USER}:${GIT_TOKEN}@gitlab:8929/root/jarvis-deploy.git" deploy-repo
             cd deploy-repo/backend
-            kustomize edit set image jarvis-backend=192.168.1.61:5050/root/jarvis-backend:${IMAGE_TAG}
+            kustomize edit set image jarvis-backend=host.minikube.internal:5050/root/jarvis-backend:${IMAGE_TAG}
             cd ..
             git config user.email "jenkins@localhost"
             git config user.name "jenkins-bot"

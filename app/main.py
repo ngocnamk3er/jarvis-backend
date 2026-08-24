@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.api.v1.router import router as api_v1_router
 from app.db.connection import init_db, close_db, get_store
+from app.clients import conversation_client
 from app.agents.graph import build_graph
 from app.agents.llm import enable_llm_cache
 from app.agents.tools.sandbox_manager import cleanup_expired_sandboxes
@@ -27,6 +28,7 @@ async def _sandbox_cleanup_loop() -> None:
 async def lifespan(app: FastAPI):
     if settings.LLM_CACHE:
         enable_llm_cache()
+    conversation_client.init_client()
     checkpointer = await init_db()
     store = get_store()
     app.state.graph = build_graph(checkpointer=checkpointer, store=store)
@@ -41,6 +43,7 @@ async def lifespan(app: FastAPI):
     yield
     cleanup_task.cancel()
     await close_db()
+    await conversation_client.close_client()
 
 
 app = FastAPI(

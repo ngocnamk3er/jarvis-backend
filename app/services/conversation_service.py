@@ -2,11 +2,11 @@ from fastapi import HTTPException
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
 from app.agents.tools.sandbox_manager import stop_sandbox
-from app.db import repository
+from app.clients import conversation_client
 
 
 async def _get_owned_conversation(conversation_id: str, user_id: str):
-    conv = await repository.get_conversation(conversation_id)
+    conv = await conversation_client.get_conversation(conversation_id)
     if conv is None or conv.user_id != user_id:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return conv
@@ -162,30 +162,34 @@ def serialize_messages(messages: list, subagent_traces: dict[str, list[dict]] | 
 
 
 async def list_conversations(user_id: str):
-    return await repository.list_conversations(user_id)
+    return await conversation_client.list_conversations(user_id)
 
 
 async def create_conversation(title: str, user_id: str):
-    return await repository.create_conversation(title, user_id)
+    return await conversation_client.create_conversation(title, user_id)
 
 
 async def delete_conversation(graph, conversation_id: str, user_id: str) -> None:
     await _get_owned_conversation(conversation_id, user_id)
     await stop_sandbox(conversation_id)
-    await repository.delete_conversation(conversation_id)
+    await conversation_client.delete_conversation(conversation_id)
 
 
 async def update_title(conversation_id: str, title: str, user_id: str):
     await _get_owned_conversation(conversation_id, user_id)
-    await repository.update_conversation_title(conversation_id, title)
+    await conversation_client.update_conversation_title(conversation_id, title)
 
 
 async def get_messages(graph, conversation_id: str, user_id: str) -> dict:
+    """Composes two data sources owned by two different services: LangGraph
+    checkpoint state (local — stays with the Chat/Agent service) and
+    subagent_traces (remote — jarvis-conversation-service). See Chapter 7's
+    API composition pattern, which this is a small preview of."""
     await _get_owned_conversation(conversation_id, user_id)
     config = {"configurable": {"thread_id": conversation_id}}
     state = await graph.aget_state(config)
     messages = state.values.get("messages", []) if state.values else []
-    subagent_traces = await repository.get_subagent_traces(conversation_id)
+    subagent_traces = await conversation_client.get_subagent_traces(conversation_id)
     return {
         "messages": serialize_messages(messages, subagent_traces),
         "is_pending": bool(state.next),

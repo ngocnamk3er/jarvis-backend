@@ -4,13 +4,13 @@ from fastapi.responses import StreamingResponse
 from app.api.deps import CurrentUser, get_current_user
 from app.schemas.chat import ChatRequest, ResumeRequest, ClarifyResumeRequest, StopRequest, AVAILABLE_MODELS
 from app.services.chat_service import chat_service
-from app.db import repository
+from app.clients import conversation_client
 
 router = APIRouter()
 
 
 async def _check_owns_thread(thread_id: str, user: CurrentUser) -> None:
-    conv = await repository.get_conversation(thread_id)
+    conv = await conversation_client.get_conversation(thread_id)
     if conv is None or conv.user_id != user.sub:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -24,7 +24,7 @@ async def list_models():
 async def chat_stream(request: ChatRequest, req: Request, user: CurrentUser = Depends(get_current_user)):
     await _check_owns_thread(request.thread_id, user)
     graph = req.app.state.graph
-    await repository.touch_conversation(request.thread_id, request.model, request.subagent_model)
+    await conversation_client.touch_conversation(request.thread_id, request.model, request.subagent_model)
     return StreamingResponse(
         chat_service.stream(
             request.thread_id,
@@ -43,7 +43,7 @@ async def chat_stream(request: ChatRequest, req: Request, user: CurrentUser = De
 async def chat_resume(request: ResumeRequest, req: Request, user: CurrentUser = Depends(get_current_user)):
     await _check_owns_thread(request.thread_id, user)
     graph = req.app.state.graph
-    await repository.touch_conversation(request.thread_id, request.model, request.subagent_model)
+    await conversation_client.touch_conversation(request.thread_id, request.model, request.subagent_model)
     return StreamingResponse(
         chat_service.resume(request.thread_id, request.decision, graph, user.sub, request.model, request.subagent_model),
         media_type="text/event-stream",
@@ -61,7 +61,7 @@ async def chat_stop(request: StopRequest, req: Request, user: CurrentUser = Depe
 async def chat_resume_clarify(request: ClarifyResumeRequest, req: Request, user: CurrentUser = Depends(get_current_user)):
     await _check_owns_thread(request.thread_id, user)
     graph = req.app.state.graph
-    await repository.touch_conversation(request.thread_id, request.model, request.subagent_model)
+    await conversation_client.touch_conversation(request.thread_id, request.model, request.subagent_model)
     return StreamingResponse(
         chat_service.resume_clarify(request.thread_id, request.answer, graph, user.sub, request.model, request.subagent_model),
         media_type="text/event-stream",

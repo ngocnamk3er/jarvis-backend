@@ -16,10 +16,12 @@ class ContextTokensState(AgentState):
 class ContextTokensMiddleware(AgentMiddleware):
     """Contributes the `context_tokens` state key so chat_service.py's
     _run_graph can persist the current-context-size gauge into the LangGraph
-    checkpoint itself, in addition to Conversation.context_tokens in
-    Postgres (see repository.set_context_tokens) — verified live that a
-    plain scalar key contributed this way survives aupdate_state/aget_state
-    with last-writer-wins semantics, same as the Postgres column.
+    checkpoint itself, in addition to Conversation.context_tokens, which now
+    lives in jarvis-conversation-service (see
+    app/clients/conversation_client.py's set_context_tokens) — verified live
+    that a plain scalar key contributed this way survives
+    aupdate_state/aget_state with last-writer-wins semantics, same as the
+    remote column.
 
     No hooks — purely a state_schema extension. Kept in both build_graph()
     variants (unlike SummarizationToolMiddleware) since every turn writes

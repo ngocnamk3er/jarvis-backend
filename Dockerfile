@@ -21,8 +21,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # `make install-browser` sets up for local dev.
 RUN playwright install --with-deps chromium
 
-COPY alembic.ini .
-COPY migrations ./migrations
 COPY app ./app
 
 EXPOSE 8000

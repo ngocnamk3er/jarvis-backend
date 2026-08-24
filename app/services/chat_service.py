@@ -5,7 +5,7 @@ from langgraph.types import Command
 
 from app.agents.middleware import TOOL_CALL_LIMIT_EVENT
 from app.agents.tools.sandbox_manager import stop_sandbox
-from app.db import repository
+from app.clients import conversation_client
 from app.schemas.chat import AVAILABLE_MODELS
 
 # Looked up in stream() before touching the graph at all — refuses a new
@@ -418,7 +418,7 @@ class ChatService:
                         trace = nested_events_by_task.get(run_id)
                         tool_call_id = self._task_tool_call_id(event)
                         if trace and tool_call_id:
-                            await repository.save_subagent_trace(thread_id, tool_call_id, trace)
+                            await conversation_client.save_subagent_trace(thread_id, tool_call_id, trace)
                 elif event["event"] == "on_custom_event" and event.get("name") == TOOL_CALL_LIMIT_EVENT:
                     limit_event = {"type": "tool_limit", **event["data"]}
                     if task_run_id:
@@ -446,7 +446,7 @@ class ChatService:
                 hitl_lines = _extract_hitl_events(state)
 
                 if last_context_tokens is not None:
-                    await repository.set_context_tokens(thread_id, last_context_tokens)
+                    await conversation_client.set_context_tokens(thread_id, last_context_tokens)
                     # Mirrored into the checkpoint itself too (ContextTokensMiddleware
                     # in app/agents/middleware.py contributes this state key) — but
                     # ONLY when there's no pending interrupt. Verified live: calling
@@ -506,7 +506,7 @@ class ChatService:
     ):
         context_window = _MODEL_CONTEXT_WINDOW.get(model)
         if context_window:
-            conv = await repository.get_conversation(thread_id)
+            conv = await conversation_client.get_conversation(thread_id)
             if conv and conv.context_tokens >= context_window:
                 message = (
                     f"This conversation has reached {model}'s context window "

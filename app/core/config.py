@@ -18,6 +18,11 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = "postgresql://jarvis:jarvis@localhost:5433/jarvis"
 
+    # jarvis-conversation-service — owns the conversations/subagent_traces
+    # tables since the Chapter 2 decomposition; see app/clients/conversation_client.py.
+    CONVERSATION_SERVICE_URL: str = "http://localhost:8001"
+    INTERNAL_API_KEY: str = ""
+
     FRONTEND_URL: str = "http://localhost:3000"
 
     OIDC_ISSUER: str = "http://localhost:8180/realms/jarvis"

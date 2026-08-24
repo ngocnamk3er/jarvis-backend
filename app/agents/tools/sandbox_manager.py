@@ -15,7 +15,7 @@ from opensandbox.models.isolated import (
 from opensandbox.services.isolated import IsolationSession
 
 from app.core.config import settings
-from app.db import repository
+from app.clients import conversation_client
 
 _WORKSPACE = "/workspace"
 _COMMAND_TIMEOUT = timedelta(seconds=300)
@@ -105,7 +105,7 @@ async def ensure_session(thread_id: str) -> IsolationSession:
     host = await _ensure_host()
     workspace_path = f"{_WORKSPACE}/{thread_id}"
 
-    conversation = await repository.get_conversation(thread_id)
+    conversation = await conversation_client.get_conversation(thread_id)
     saved_session_id = conversation.sandbox_session_id if conversation else None
 
     session: IsolationSession | None = None
@@ -125,7 +125,7 @@ async def ensure_session(thread_id: str) -> IsolationSession:
                 idle_timeout_seconds=_SESSION_IDLE_TIMEOUT_SECONDS,
             )
         )
-        await repository.set_sandbox_session_id(thread_id, session.session_id)
+        await conversation_client.set_sandbox_session_id(thread_id, session.session_id)
 
     _sessions[thread_id] = _Entry(session=session)
     return session
@@ -146,7 +146,7 @@ async def stop_sandbox(thread_id: str) -> None:
     if session is None:
         # No live handle in this process (e.g. after a restart) — best-effort
         # reattach-then-delete using the persisted ID so cleanup still works.
-        conversation = await repository.get_conversation(thread_id)
+        conversation = await conversation_client.get_conversation(thread_id)
         saved_session_id = conversation.sandbox_session_id if conversation else None
         if saved_session_id is None:
             return
@@ -162,7 +162,7 @@ async def stop_sandbox(thread_id: str) -> None:
         except Exception:
             pass
 
-    await repository.set_sandbox_session_id(thread_id, None)
+    await conversation_client.set_sandbox_session_id(thread_id, None)
 
 
 async def cleanup_expired_sandboxes(ttl_minutes: int = 30) -> int:

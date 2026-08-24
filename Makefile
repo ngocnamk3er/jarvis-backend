@@ -6,7 +6,7 @@ UVICORN := $(VENV)/bin/uvicorn
 SANDBOX_VENV := .opensandbox-venv
 SANDBOX_CONFIG := $(HOME)/.sandbox.toml
 
-.PHONY: install install-browser run dev shell build-sandbox install-sandbox-server sandbox-server migrate migration
+.PHONY: install install-browser run dev shell build-sandbox install-sandbox-server sandbox-server
 
 install:
 	python3 -m venv $(VENV)
@@ -37,9 +37,3 @@ install-sandbox-server:
 sandbox-server:
 	@[ -f $(SANDBOX_CONFIG) ] || $(SANDBOX_VENV)/bin/opensandbox-server init-config $(SANDBOX_CONFIG) --example docker
 	OPENSANDBOX_INSECURE_SERVER=YES $(SANDBOX_VENV)/bin/opensandbox-server --config $(SANDBOX_CONFIG)
-
-migrate:
-	$(VENV)/bin/alembic upgrade head
-
-migration:
-	$(VENV)/bin/alembic revision --autogenerate -m "$(name)"

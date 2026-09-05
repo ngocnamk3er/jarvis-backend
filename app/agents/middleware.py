@@ -5,21 +5,36 @@ from typing_extensions import NotRequired
 
 from langchain_core.callbacks import adispatch_custom_event, dispatch_custom_event
 from langchain_core.messages import AIMessage, ToolCall, ToolMessage
-from langchain.agents.middleware.types import AgentMiddleware, AgentState, ModelRequest, ModelResponse, hook_config
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    AgentState,
+    ModelRequest,
+    ModelResponse,
+    ToolCallRequest,
+    hook_config,
+)
 from langchain.agents.middleware.tool_call_limit import ToolCallLimitState
 
 
 class ToolToggleMiddleware(AgentMiddleware):
     """Per-run tool filtering. Reads `disabled_tools` (a list of tool names)
     from LangGraph's configurable — set by chat_service._make_config from the
-    request's `web_search` flag — and drops those tools from each model call.
+    request's `web_search` flag.
 
-    The graph stays bound to the full tool list; this just narrows what the
-    model is *offered* per turn, so there's no need to rebuild the graph per
-    on/off permutation. Also added to the research subagent's middleware list
-    (subagents.py): LangGraph merges the root run's configurable into a
-    subagent's own config, so "web off" reaches the subagent too and means
-    web off everywhere, not just the main agent.
+    Two layers, both needed:
+    - `wrap_model_call` drops the tools from what the model is *offered* each
+      turn (the graph stays bound to the full list, so no per-permutation
+      rebuild).
+    - `wrap_tool_call` rejects a call to a disabled tool with an error
+      ToolMessage — a backstop for models that emit a tool call anyway
+      despite it not being in the offered schema (deepseek-flash does this
+      when the prompt literally says "search the web"). Without this the
+      tool node happily executes the hallucinated call, since it's still
+      registered.
+
+    Also on the research subagent's middleware list (subagents.py): LangGraph
+    merges the root run's configurable into a subagent's own config, so "web
+    off" means web off everywhere, not just the main agent.
     """
 
     @staticmethod
@@ -39,6 +54,17 @@ class ToolToggleMiddleware(AgentMiddleware):
         kept = [t for t in request.tools if getattr(t, "name", None) not in disabled]
         return request.override(tools=kept)
 
+    def _reject(self, request: ToolCallRequest) -> ToolMessage | None:
+        name = request.tool_call["name"]
+        if name in self._disabled():
+            return ToolMessage(
+                content=f"The '{name}' tool is turned off for this conversation.",
+                tool_call_id=request.tool_call["id"],
+                name=name,
+                status="error",
+            )
+        return None
+
     def wrap_model_call(
         self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]
     ) -> ModelResponse:
@@ -48,6 +74,14 @@ class ToolToggleMiddleware(AgentMiddleware):
         self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]
     ) -> ModelResponse:
         return await handler(self._apply(request))
+
+    def wrap_tool_call(self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Any]) -> Any:
+        return self._reject(request) or handler(request)
+
+    async def awrap_tool_call(
+        self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[Any]]
+    ) -> Any:
+        return self._reject(request) or await handler(request)
 
 
 class ContextTokensState(AgentState):

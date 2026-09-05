@@ -64,6 +64,9 @@ AVAILABLE_MODELS = [
 DEFAULT_MODEL = next(m["id"] for m in AVAILABLE_MODELS if m.get("default"))
 
 
+# False strips web_search + web_fetch from the main agent AND the research
+# subagent for the run (see ToolToggleMiddleware). Carried on resume/clarify
+# too so it survives a bash-approval interrupt mid-turn.
 class ChatRequest(BaseModel):
     thread_id: str
     content: str
@@ -74,6 +77,7 @@ class ChatRequest(BaseModel):
     # the subagent already follows `model` above unless this is set to
     # something different.
     subagent_model: str | None = None
+    web_search: bool = True
 
 
 class ResumeRequest(BaseModel):
@@ -81,6 +85,7 @@ class ResumeRequest(BaseModel):
     decision: str
     model: str = DEFAULT_MODEL
     subagent_model: str | None = None
+    web_search: bool = True
 
 
 class ClarifyResumeRequest(BaseModel):
@@ -88,6 +93,7 @@ class ClarifyResumeRequest(BaseModel):
     answer: str
     model: str = DEFAULT_MODEL
     subagent_model: str | None = None
+    web_search: bool = True
 
 
 class StopRequest(BaseModel):

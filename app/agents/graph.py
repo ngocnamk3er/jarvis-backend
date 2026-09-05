@@ -4,7 +4,7 @@ from deepagents.middleware.subagents import SubAgentMiddleware
 from deepagents.backends import StateBackend
 
 from app.agents.llm import build_llm_with_fallback
-from app.agents.middleware import ContextTokensMiddleware, SoftHardToolCallLimitMiddleware
+from app.agents.middleware import ContextTokensMiddleware, SoftHardToolCallLimitMiddleware, ToolToggleMiddleware
 from app.agents.prompt import build_system_prompt
 from app.agents.tools import tools
 from app.agents.subagents import RESEARCH_SUBAGENT
@@ -36,6 +36,9 @@ def build_graph(
     """
     middleware = [
         ContextTokensMiddleware(),
+        # Drops web_search/web_fetch (etc.) per-run when the user toggles them
+        # off — see the `web_search` flag in ChatRequest / chat_service._make_config.
+        ToolToggleMiddleware(),
         HumanInTheLoopMiddleware(
             interrupt_on={"bash": {"allowed_decisions": ["approve", "reject"]}},
         ),

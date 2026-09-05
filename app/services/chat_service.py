@@ -175,6 +175,7 @@ def _make_config(
     thinking_effort: str = "high",
     model: str | None = None,
     subagent_model: str | None = None,
+    web_search: bool = True,
 ) -> dict:
     return {
         "configurable": {
@@ -185,6 +186,8 @@ def _make_config(
             "thinking_effort": thinking_effort,
             "model": model,
             "subagent_model": subagent_model,
+            # Read by ToolToggleMiddleware (main agent + research subagent).
+            "disabled_tools": [] if web_search else ["web_search", "web_fetch"],
         },
         "recursion_limit": 200,
     }
@@ -503,6 +506,7 @@ class ChatService:
         thinking_effort: str = "high",
         model: str | None = None,
         subagent_model: str | None = None,
+        web_search: bool = True,
     ):
         context_window = _MODEL_CONTEXT_WINDOW.get(model)
         if context_window:
@@ -516,7 +520,7 @@ class ChatService:
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 return
 
-        config = _make_config(thread_id, user_id, thinking_effort, model, subagent_model)
+        config = _make_config(thread_id, user_id, thinking_effort, model, subagent_model, web_search)
         async for chunk in self._run_graph(
             {"messages": [HumanMessage(content=content)]}, config, graph
         ):
@@ -530,12 +534,13 @@ class ChatService:
         user_id: str,
         model: str | None = None,
         subagent_model: str | None = None,
+        web_search: bool = True,
     ):
         """Resume a bash-approval HITL interrupt. HumanInTheLoopMiddleware
         expects a list of one decision dict per pending action_request —
         the same decision ("approve"/"reject") is applied to every pending
         action in this batch (no per-action granularity in the UI)."""
-        config = _make_config(thread_id, user_id, model=model, subagent_model=subagent_model)
+        config = _make_config(thread_id, user_id, model=model, subagent_model=subagent_model, web_search=web_search)
 
         # Count pending action_requests so we send exactly N decisions
         n = 1
@@ -560,12 +565,13 @@ class ChatService:
         user_id: str,
         model: str | None = None,
         subagent_model: str | None = None,
+        web_search: bool = True,
     ):
         """Resume an ask_user interrupt. Unlike resume() above, the Command's
         resume value is the raw answer string itself — ask_user's interrupt()
         call returns exactly whatever value Command(resume=...) carries, since
         it's a bare langgraph interrupt(), not a decisions-list protocol."""
-        config = _make_config(thread_id, user_id, model=model, subagent_model=subagent_model)
+        config = _make_config(thread_id, user_id, model=model, subagent_model=subagent_model, web_search=web_search)
         async for chunk in self._run_graph(Command(resume=answer), config, graph):
             yield chunk
 

@@ -1,12 +1,53 @@
 """Custom middleware not covered by langchain's built-ins."""
 
-from typing import Any
+from typing import Any, Awaitable, Callable
 from typing_extensions import NotRequired
 
 from langchain_core.callbacks import adispatch_custom_event, dispatch_custom_event
 from langchain_core.messages import AIMessage, ToolCall, ToolMessage
-from langchain.agents.middleware.types import AgentMiddleware, AgentState, hook_config
+from langchain.agents.middleware.types import AgentMiddleware, AgentState, ModelRequest, ModelResponse, hook_config
 from langchain.agents.middleware.tool_call_limit import ToolCallLimitState
+
+
+class ToolToggleMiddleware(AgentMiddleware):
+    """Per-run tool filtering. Reads `disabled_tools` (a list of tool names)
+    from LangGraph's configurable — set by chat_service._make_config from the
+    request's `web_search` flag — and drops those tools from each model call.
+
+    The graph stays bound to the full tool list; this just narrows what the
+    model is *offered* per turn, so there's no need to rebuild the graph per
+    on/off permutation. Also added to the research subagent's middleware list
+    (subagents.py): LangGraph merges the root run's configurable into a
+    subagent's own config, so "web off" reaches the subagent too and means
+    web off everywhere, not just the main agent.
+    """
+
+    @staticmethod
+    def _disabled() -> set[str]:
+        try:
+            from langgraph.config import get_config
+
+            return set(get_config().get("configurable", {}).get("disabled_tools") or [])
+        except RuntimeError:
+            # No ambient config (e.g. a graph.aget_state() read path) — nothing to filter.
+            return set()
+
+    def _apply(self, request: ModelRequest) -> ModelRequest:
+        disabled = self._disabled()
+        if not disabled or not request.tools:
+            return request
+        kept = [t for t in request.tools if getattr(t, "name", None) not in disabled]
+        return request.override(tools=kept)
+
+    def wrap_model_call(
+        self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]
+    ) -> ModelResponse:
+        return handler(self._apply(request))
+
+    async def awrap_model_call(
+        self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]
+    ) -> ModelResponse:
+        return await handler(self._apply(request))
 
 
 class ContextTokensState(AgentState):

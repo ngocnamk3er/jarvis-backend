@@ -5,7 +5,7 @@ from langchain.agents.middleware import HumanInTheLoopMiddleware, TodoListMiddle
 from deepagents.middleware.subagents import CompiledSubAgent
 
 from app.agents.llm import build_llm_with_fallback
-from app.agents.middleware import SoftHardToolCallLimitMiddleware
+from app.agents.middleware import SoftHardToolCallLimitMiddleware, ToolToggleMiddleware
 from app.agents.tools.web_search import web_search
 from app.agents.tools.web_fetch import web_fetch
 from app.agents.tools.bash import bash
@@ -63,6 +63,11 @@ RESEARCH_SUBAGENT: CompiledSubAgent = {
         # cap on how many subagents get spawned in the first place.
         middleware=[
             TodoListMiddleware(),
+            # Same web-search on/off toggle as the main agent — the root run's
+            # `disabled_tools` config reaches here (LangGraph merges it in), so
+            # turning web off also strips web_search/web_fetch from the
+            # research subagent, not just the caller.
+            ToolToggleMiddleware(),
             # Two-tier per-run caps, same as the main agent's (see graph.py) — soft
             # blocks-but-continues, hard blocks-and-stops this subagent's own run.
             SoftHardToolCallLimitMiddleware(

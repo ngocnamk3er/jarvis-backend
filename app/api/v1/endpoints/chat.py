@@ -34,6 +34,7 @@ async def chat_stream(request: ChatRequest, req: Request, user: CurrentUser = De
             request.thinking_effort,
             request.model,
             request.subagent_model,
+            request.web_search,
         ),
         media_type="text/event-stream",
     )
@@ -45,7 +46,10 @@ async def chat_resume(request: ResumeRequest, req: Request, user: CurrentUser = 
     graph = req.app.state.graph
     await conversation_client.touch_conversation(request.thread_id, request.model, request.subagent_model)
     return StreamingResponse(
-        chat_service.resume(request.thread_id, request.decision, graph, user.sub, request.model, request.subagent_model),
+        chat_service.resume(
+            request.thread_id, request.decision, graph, user.sub,
+            request.model, request.subagent_model, request.web_search,
+        ),
         media_type="text/event-stream",
     )
 
@@ -63,6 +67,9 @@ async def chat_resume_clarify(request: ClarifyResumeRequest, req: Request, user:
     graph = req.app.state.graph
     await conversation_client.touch_conversation(request.thread_id, request.model, request.subagent_model)
     return StreamingResponse(
-        chat_service.resume_clarify(request.thread_id, request.answer, graph, user.sub, request.model, request.subagent_model),
+        chat_service.resume_clarify(
+            request.thread_id, request.answer, graph, user.sub,
+            request.model, request.subagent_model, request.web_search,
+        ),
         media_type="text/event-stream",
     )

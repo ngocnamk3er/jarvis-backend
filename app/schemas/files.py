@@ -14,6 +14,14 @@ class FileNodeOut(BaseModel):
     updated_at: datetime
 
 
+class NodeDetailOut(FileNodeOut):
+    """GET /nodes/{id} — adds extracted_text, used by the frontend's text
+    preview (images/PDFs preview via GET /nodes/{id}/content's raw bytes
+    instead — see file-browser-modal.tsx)."""
+
+    extracted_text: str | None = None
+
+
 class FolderCreateBody(BaseModel):
     name: str
     parent_path: str = "/"

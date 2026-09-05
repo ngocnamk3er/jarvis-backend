@@ -14,6 +14,14 @@ async def list_tree(user_id: str, path: str) -> list[dict]:
     return await file_client.list_tree(user_id, path)
 
 
+async def get_node(user_id: str, node_id: str) -> dict | None:
+    return await file_client.get_node(user_id, node_id)
+
+
+async def get_content(user_id: str, node_id: str) -> tuple[bytes, str, str]:
+    return await file_client.get_content(user_id, node_id)
+
+
 async def create_folder(user_id: str, parent_path: str, name: str) -> dict:
     return await file_client.create_folder(user_id, parent_path, name)
 

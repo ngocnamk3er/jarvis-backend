@@ -93,6 +93,19 @@ async def get_node(user_id: str, node_id: str) -> dict | None:
     return FileNodeDetailDTO(**data).model_dump() if data is not None else None
 
 
+async def get_content(user_id: str, node_id: str) -> tuple[bytes, str, str]:
+    """Returns (raw_bytes, mime_type, filename) for preview/download in the
+    frontend — see app/api/v1/endpoints/files.py's proxy of this."""
+    resp = await _get_client().get(f"/files/nodes/{node_id}/content", params={"user_id": user_id})
+    resp.raise_for_status()
+    mime_type = resp.headers.get("content-type", "application/octet-stream")
+    filename = "download"
+    disposition = resp.headers.get("content-disposition", "")
+    if 'filename="' in disposition:
+        filename = disposition.split('filename="', 1)[1].split('"', 1)[0]
+    return resp.content, mime_type, filename
+
+
 async def resolve_path(user_id: str, path: str) -> dict | None:
     resp = await _get_client().get("/files/resolve", params={"user_id": user_id, "path": path})
     resp.raise_for_status()

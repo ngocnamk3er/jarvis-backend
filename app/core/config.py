@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     # jarvis-conversation-service — owns the conversations/subagent_traces
     # tables since the Chapter 2 decomposition; see app/clients/conversation_client.py.
     CONVERSATION_SERVICE_URL: str = "http://localhost:8001"
+    # jarvis-file-service — owns the per-user folder/file workspace (tree
+    # metadata + MinIO blobs + Qdrant embeddings); see app/clients/file_client.py.
+    # Shares INTERNAL_API_KEY below with conversation-service.
+    FILE_SERVICE_URL: str = "http://localhost:8002"
     INTERNAL_API_KEY: str = ""
 
     FRONTEND_URL: str = "http://localhost:3000"

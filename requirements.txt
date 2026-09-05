@@ -5,6 +5,9 @@ pydantic-settings>=2.10.1
 python-dotenv==1.0.1
 httpx>=0.28.1
 markdownify>=0.13.1
+# Required by FastAPI to parse multipart/form-data (Form fields + UploadFile)
+# on POST /files/upload (see app/api/v1/endpoints/files.py).
+python-multipart>=0.0.9
 langgraph>=1.0.0
 langchain>=1.0.0
 deepagents>=0.6.0

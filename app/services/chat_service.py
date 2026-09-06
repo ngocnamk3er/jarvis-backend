@@ -4,7 +4,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from app.agents.middleware import TOOL_CALL_LIMIT_EVENT
-from app.agents.tools.sandbox_manager import stop_sandbox
+from app.agents.tools.sandbox_manager import reset as reset_sandbox
 from app.clients import conversation_client
 from app.schemas.chat import AVAILABLE_MODELS
 
@@ -95,7 +95,10 @@ class ThinkingParser:
 # ---------------------------------------------------------------------------
 
 
-VIZ_TOOLS = {"generate_visualization_svg"}
+# Tools whose result renders as its own inline block (viz / file chip), not a
+# generic tool badge — suppress their tool_start/tool_chunk; tool_end turns
+# the special JSON payload into a dedicated SSE event.
+INLINE_RESULT_TOOLS = {"generate_visualization_svg", "present_file"}
 TODO_TOOL = "write_todos"
 # ask_user has its own dedicated clarify_request event (see _extract_hitl_events)
 # instead of a generic tool badge — the interrupt it raises means its tool_end
@@ -115,7 +118,7 @@ class ToolStartEventHandler:
             if task_run_id:
                 result["task_run_id"] = task_run_id
             return [result]
-        if event["name"] in VIZ_TOOLS or event["name"] in HIDDEN_TOOLS:
+        if event["name"] in INLINE_RESULT_TOOLS or event["name"] in HIDDEN_TOOLS:
             return []
         raw_input = dict(event["data"].get("input") or {})
         label = raw_input.pop("label", None)
@@ -145,12 +148,17 @@ class ToolEndEventHandler:
                 if task_run_id:
                     viz_result["task_run_id"] = task_run_id
                 return [viz_result]
+            if "__file__" in data:
+                file_result: dict = {"type": "file", **data["__file__"]}
+                if task_run_id:
+                    file_result["task_run_id"] = task_run_id
+                return [file_result]
         except Exception:
             pass
         # Viz tools suppress tool_start/tool_chunk, so FE has no badge yet.
         # Emit a synthetic tool_start first so FE can show the error output.
         events: list[dict] = []
-        if event["name"] in VIZ_TOOLS:
+        if event["name"] in INLINE_RESULT_TOOLS:
             raw_input = dict(event["data"].get("input") or {})
             label = raw_input.pop("label", None)
             start: dict = {"type": "tool_start", "name": event["name"], "label": label, "input": raw_input or None, "run_id": event.get("run_id", "")}
@@ -250,7 +258,7 @@ class ChatService:
         if task is None or task.done():
             return False
         task.cancel()
-        await stop_sandbox(thread_id)
+        await reset_sandbox(thread_id)
         return True
 
     @staticmethod
@@ -310,7 +318,7 @@ class ChatService:
             name = tc.get("name") or ""
             index = tc.get("index", 0)
             args_delta = tc.get("args", "") or ""
-            if name and name in VIZ_TOOLS:
+            if name and name in INLINE_RESULT_TOOLS:
                 viz_indexes.add(index)
             if name and name in HIDDEN_TOOLS:
                 viz_indexes.add(index)

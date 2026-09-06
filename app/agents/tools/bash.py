@@ -1,28 +1,34 @@
+import httpx
 from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
-from opensandbox.exceptions.sandbox import SandboxException
 
-from app.agents.tools.sandbox_manager import exec_bash_in_sandbox, get_thread_id
+from app.agents.tools.sandbox_manager import exec_bash, get_thread_id
 
 
 @tool
 async def bash(command: str, label: str, config: RunnableConfig) -> str:
     """Execute a bash command inside the sandbox and return stdout.
 
-    One persistent directory is available:
-    - /workspace  : working directory (default cwd), persists across calls
-                    within the same conversation
+    Each call starts in your conversation's own private working directory
+    (that's the cwd). Files you write there with a plain relative path —
+    `report.docx`, `out/chart.png` — persist across bash calls in this
+    conversation. Do NOT `cd /workspace` (that's the shared parent, not your
+    dir); just use relative paths. A fresh shell each call, so chain steps
+    with `&&` or write a script and run it.
+
+    The sandbox has Python with pandas/numpy/scipy/scikit-learn/matplotlib/
+    etc. for data work, and python-docx/python-pptx/openpyxl/reportlab/fpdf2
+    plus pandoc for generating .docx/.pptx/.xlsx/.pdf files. After creating a
+    file, call `present_file("report.docx", ...)` to hand it to the user.
 
     Common uses:
-        bash("ls /workspace")
-        bash("pip install pandas -q")
-        bash("wc -l /workspace/*.csv")
+        bash("ls -la")
+        bash("pip install <pkg> -q")   # or: uv pip install <pkg>
+        bash("python analyze.py")
 
-    IMPORTANT — package installation timeouts:
-        When apt-get or pip install runs past the 300s command timeout, it is
-        killed — the process does NOT keep running in the background (unlike
-        a plain subprocess). If a command times out, just retry it; if it
-        keeps timing out, break the work into smaller steps.
+    IMPORTANT — timeouts:
+        A command past the 300s limit is killed (its process tree too). If a
+        command times out, retry it; if it keeps timing out, split the work.
 
     Args:
         command: Bash command to execute.
@@ -31,22 +37,21 @@ async def bash(command: str, label: str, config: RunnableConfig) -> str:
     thread_id = get_thread_id(config)
 
     try:
-        execution = await exec_bash_in_sandbox(thread_id, command)
-    except SandboxException as e:
+        result = await exec_bash(thread_id, command)
+    except httpx.HTTPError as e:
         return f"Error: sandbox unavailable ({e})."
 
-    stdout = "\n".join(m.text for m in execution.logs.stdout).strip()
-    stderr = "\n".join(m.text for m in execution.logs.stderr).strip()
+    if result.get("timed_out"):
+        return "Error: command timed out (300s limit) and was killed."
 
-    output = ""
-    if stdout:
-        output += stdout
-    if execution.exit_code and execution.exit_code != 0 and stderr:
+    stdout = (result.get("stdout") or "").strip()
+    stderr = (result.get("stderr") or "").strip()
+    exit_code = result.get("exit_code")
+
+    output = stdout
+    if exit_code not in (0, None) and stderr:
         output += f"\nStderr:\n{stderr}" if output else f"Stderr:\n{stderr}"
-    if execution.exit_code and execution.exit_code != 0 and not output:
-        if execution.error and "killed" in " ".join(execution.error.traceback or []):
-            output = "Error: command timed out (300s limit) and was killed."
-        else:
-            output = f"Command exited with code {execution.exit_code}"
+    if exit_code not in (0, None) and not output:
+        output = f"Command exited with code {exit_code}"
 
     return output or "(no output)"

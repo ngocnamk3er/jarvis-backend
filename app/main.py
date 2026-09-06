@@ -1,4 +1,3 @@
-import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,21 +6,9 @@ from app.core.config import settings
 from app.api.v1.router import router as api_v1_router
 from app.db.connection import init_db, close_db, get_store
 from app.clients import conversation_client, file_client
+from app.agents.tools import sandbox_manager
 from app.agents.graph import build_graph
 from app.agents.llm import enable_llm_cache
-from app.agents.tools.sandbox_manager import cleanup_expired_sandboxes
-
-_SANDBOX_TTL_MINUTES = 30
-_CLEANUP_INTERVAL_SECONDS = 5 * 60  # check every 5 minutes
-
-
-async def _sandbox_cleanup_loop() -> None:
-    while True:
-        await asyncio.sleep(_CLEANUP_INTERVAL_SECONDS)
-        try:
-            await cleanup_expired_sandboxes(_SANDBOX_TTL_MINUTES)
-        except Exception:
-            pass
 
 
 @asynccontextmanager
@@ -30,6 +17,7 @@ async def lifespan(app: FastAPI):
         enable_llm_cache()
     conversation_client.init_client()
     file_client.init_client()
+    sandbox_manager.init_client()
     checkpointer = await init_db()
     store = get_store()
     app.state.graph = build_graph(checkpointer=checkpointer, store=store)
@@ -40,12 +28,11 @@ async def lifespan(app: FastAPI):
     # full tool list. See build_graph()'s docstring for why this is safe to
     # share the same checkpointer as app.state.graph above.
     app.state.history_graph = build_graph(checkpointer=checkpointer, store=store, include_tools=False)
-    cleanup_task = asyncio.create_task(_sandbox_cleanup_loop())
     yield
-    cleanup_task.cancel()
     await close_db()
     await conversation_client.close_client()
     await file_client.close_client()
+    await sandbox_manager.close_client()
 
 
 app = FastAPI(

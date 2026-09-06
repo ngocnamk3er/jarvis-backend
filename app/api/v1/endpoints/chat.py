@@ -1,7 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import CurrentUser, get_current_user
+from app.agents.tools import sandbox_manager
 from app.schemas.chat import ChatRequest, ResumeRequest, ClarifyResumeRequest, StopRequest, AVAILABLE_MODELS
 from app.services.chat_service import chat_service
 from app.clients import conversation_client
@@ -51,6 +53,25 @@ async def chat_resume(request: ResumeRequest, req: Request, user: CurrentUser = 
             request.model, request.subagent_model, request.web_search,
         ),
         media_type="text/event-stream",
+    )
+
+
+@router.get("/sandbox-file")
+async def chat_sandbox_file(thread_id: str, name: str, user: CurrentUser = Depends(get_current_user)):
+    """Download a file the agent surfaced with `present_file` — proxied from
+    the sandbox. Chat-scoped: it lives in the sandbox's ephemeral workspace,
+    so a link stops working once that pod restarts."""
+    await _check_owns_thread(thread_id, user)
+    try:
+        content, mime, filename = await sandbox_manager.read_file(thread_id, name)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail="File no longer available")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=503, detail="Sandbox unavailable")
+    return Response(
+        content=content,
+        media_type=mime,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
     )
 
 

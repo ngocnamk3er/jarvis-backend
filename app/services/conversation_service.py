@@ -1,7 +1,7 @@
 from fastapi import HTTPException
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
-from app.agents.tools.sandbox_manager import stop_sandbox
+from app.agents.tools.sandbox_manager import reset as reset_sandbox
 from app.clients import conversation_client
 
 
@@ -134,6 +134,9 @@ def serialize_messages(messages: list, subagent_traces: dict[str, list[dict]] | 
                     if "__viz__" in data:
                         pending_parts.append({"type": "viz", "format": data["__viz__"], "code": data["code"], "title": data.get("title", "")})
                         continue
+                    if "__file__" in data:
+                        pending_parts.append({"type": "file", **data["__file__"]})
+                        continue
                 except Exception:
                     pass
                 tool_input = dict(tc["args"] or {})
@@ -171,7 +174,7 @@ async def create_conversation(title: str, user_id: str):
 
 async def delete_conversation(graph, conversation_id: str, user_id: str) -> None:
     await _get_owned_conversation(conversation_id, user_id)
-    await stop_sandbox(conversation_id)
+    await reset_sandbox(conversation_id)
     await conversation_client.delete_conversation(conversation_id)
 
 

@@ -9,12 +9,12 @@ from app.agents.tools.sandbox_manager import exec_bash, get_thread_id
 async def bash(command: str, label: str, config: RunnableConfig) -> str:
     """Execute a bash command inside the sandbox and return stdout.
 
-    Each call starts in your conversation's own private working directory
-    (that's the cwd). Files you write there with a plain relative path —
-    `report.docx`, `out/chart.png` — persist across bash calls in this
-    conversation. Do NOT `cd /workspace` (that's the shared parent, not your
-    dir); just use relative paths. A fresh shell each call, so chain steps
-    with `&&` or write a script and run it.
+    Each call starts in `/workspace`, a private directory for this
+    conversation — nothing else is in there and no other conversation can see
+    it. Files you write with a plain relative path (`report.docx`,
+    `out/chart.png`) or an absolute one under `/workspace` persist across bash
+    calls in this conversation. A fresh shell each call, so chain steps with
+    `&&` or write a script and run it.
 
     The sandbox has Python with pandas/numpy/scipy/scikit-learn/matplotlib/
     etc. for data work, and python-docx/python-pptx/openpyxl/reportlab/fpdf2

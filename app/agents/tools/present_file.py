@@ -26,12 +26,15 @@ async def present_file(path: str, label: str, config: RunnableConfig) -> str:
             "Sharing the quarterly report").
     """
     thread_id = get_thread_id(config)
-    # The sandbox resolves a relative name against the conversation's dir and an
-    # absolute path as-is (both must stay under /workspace) — so pass the path
-    # through almost untouched; just normalise a leading "./".
+    # Must be a plain relative name inside the conversation's own workspace —
+    # no absolute paths, no ".." (the sandbox rejects these too, this is the
+    # outer guard).
     name = path.strip()
     if name.startswith("./"):
         name = name[2:]
+    from pathlib import PurePosixPath
+    if name.startswith("/") or ".." in PurePosixPath(name).parts:
+        return "Error: path must be a relative name inside your workspace (no '/' prefix, no '..')."
 
     try:
         content, mime, filename = await read_file(thread_id, name)

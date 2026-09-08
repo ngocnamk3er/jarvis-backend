@@ -1,3 +1,5 @@
+from pathlib import PurePosixPath
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
@@ -62,6 +64,8 @@ async def chat_sandbox_file(thread_id: str, name: str, user: CurrentUser = Depen
     the sandbox. Chat-scoped: it lives in the sandbox's ephemeral workspace,
     so a link stops working once that pod restarts."""
     await _check_owns_thread(thread_id, user)
+    if name.startswith("/") or ".." in PurePosixPath(name).parts:
+        raise HTTPException(status_code=400, detail="Invalid file name")
     try:
         content, mime, filename = await sandbox_manager.read_file(thread_id, name)
     except httpx.HTTPStatusError as e:

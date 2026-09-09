@@ -36,6 +36,21 @@ class Settings(BaseSettings):
 
     LLM_CACHE: bool = False
 
+    # --- Tool-output offloading (ToolOutputOffloadMiddleware) ---
+    # A long tool result (bash dump, fetched web page, big search payload)
+    # bloats every subsequent model call. When one is longer than
+    # TOOL_OFFLOAD_MAX_CHARS and is no longer among the KEEP_RECENT most recent
+    # tool results, the model-facing copy is replaced with a short stub
+    # (head+tail preview + a ref) and the full text is stashed in the LangGraph
+    # store; the agent can pull it back with the `recall_tool_output` tool.
+    # The persisted checkpoint keeps every tool result in full — the UI/history
+    # is untouched. Set ENABLED=False to turn the whole thing off.
+    TOOL_OFFLOAD_ENABLED: bool = True
+    TOOL_OFFLOAD_MAX_CHARS: int = 8000        # ~2k tokens
+    TOOL_OFFLOAD_KEEP_RECENT: int = 2         # newest N tool results are never stubbed
+    TOOL_OFFLOAD_PREVIEW_HEAD: int = 700
+    TOOL_OFFLOAD_PREVIEW_TAIL: int = 300
+
     # jarvis-sandbox — one shared container backing the bash tool + present_file.
     # Replaced OpenSandbox (its bwrap/userns isolation broke on this host).
     SANDBOX_SERVICE_URL: str = "http://localhost:8003"

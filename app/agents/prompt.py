@@ -20,6 +20,7 @@ Use `bash` for all file operations: reading, writing, editing, running scripts.
 - Never fetch the same URL twice in one conversation — if you already fetched a URL, use the content you received, even if it was incomplete.
 - Never call web_search more than twice on the same topic. If two searches haven't found what you need, stop and reason: who officially publishes this type of data? Fetch their site directly instead of searching again.
 - Once you have enough information to answer, stop calling tools and respond immediately.
+- A long tool result that is a few turns old is shown to you as a `[tool-output-offloaded]` stub with a head/tail preview — this is normal, not an error. The preview is usually enough; only if you genuinely need the whole thing, call `recall_tool_output` with the `to_...` ref from the stub.
 
 ## Response quality
 - Answer concisely and directly. Do not pad responses.

@@ -4,7 +4,12 @@ from deepagents.middleware.subagents import SubAgentMiddleware
 from deepagents.backends import StateBackend
 
 from app.agents.llm import build_llm_with_fallback
-from app.agents.middleware import ContextTokensMiddleware, SoftHardToolCallLimitMiddleware, ToolToggleMiddleware
+from app.agents.middleware import (
+    ContextTokensMiddleware,
+    SoftHardToolCallLimitMiddleware,
+    ToolOutputOffloadMiddleware,
+    ToolToggleMiddleware,
+)
 from app.agents.prompt import build_system_prompt
 from app.agents.tools import tools
 from app.agents.subagents import RESEARCH_SUBAGENT
@@ -39,6 +44,11 @@ def build_graph(
         # Drops web_search/web_fetch (etc.) per-run when the user toggles them
         # off — see the `web_search` flag in ChatRequest / chat_service._make_config.
         ToolToggleMiddleware(),
+        # Swaps a long, no-longer-recent tool result for a short stub in the
+        # model-facing message list and stashes the full text in the store;
+        # `recall_tool_output` brings it back on demand. Non-destructive — the
+        # checkpoint keeps the full result, so history/SSE are untouched.
+        ToolOutputOffloadMiddleware(),
         HumanInTheLoopMiddleware(
             interrupt_on={"bash": {"allowed_decisions": ["approve", "reject"]}},
         ),

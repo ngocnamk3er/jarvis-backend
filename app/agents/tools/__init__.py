@@ -5,6 +5,7 @@ from app.agents.tools.web_fetch import web_fetch
 from app.agents.tools.generate_visualization_svg import generate_visualization_svg
 from app.agents.tools.ask_user import ask_user
 from app.agents.tools.files import list_files, read_file, grep_files, search_files
+from app.agents.tools.recall_tool_output import recall_tool_output
 
 tools = [
     bash,
@@ -17,4 +18,5 @@ tools = [
     read_file,
     grep_files,
     search_files,
+    recall_tool_output,
 ]

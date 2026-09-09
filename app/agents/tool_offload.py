@@ -54,10 +54,14 @@ def render_stub(*, name: str, ref: str, text: str, head: int, tail: int) -> str:
     """The compact placeholder the model sees instead of the full output."""
     n = len(text)
     approx_tokens = n // 4
-    body = text if n <= head + tail else (
-        text[:head].rstrip()
-        + f"\n... [{n - head - tail:,} chars omitted] ...\n"
-        + text[-tail:].lstrip()
+    body = (
+        text
+        if n <= head + tail
+        else (
+            text[:head].rstrip()
+            + f"\n... [{n - head - tail:,} chars omitted] ...\n"
+            + text[-tail:].lstrip()
+        )
     )
     return (
         f"{STUB_MARKER} tool={name!r}  size={n:,} chars (~{approx_tokens:,} tokens)\n"

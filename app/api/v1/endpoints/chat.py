@@ -64,6 +64,7 @@ async def chat_sandbox_file(thread_id: str, name: str, user: CurrentUser = Depen
     the sandbox. Chat-scoped: it lives in the sandbox's ephemeral workspace,
     so a link stops working once that pod restarts."""
     await _check_owns_thread(thread_id, user)
+    name = sandbox_manager.normalize_workspace_path(name)
     if name.startswith("/") or ".." in PurePosixPath(name).parts:
         raise HTTPException(status_code=400, detail="Invalid file name")
     try:

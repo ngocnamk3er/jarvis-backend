@@ -4,7 +4,7 @@ import httpx
 from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
 
-from app.agents.tools.sandbox_manager import get_thread_id, read_file
+from app.agents.tools.sandbox_manager import get_thread_id, normalize_workspace_path, read_file
 
 
 @tool
@@ -19,22 +19,21 @@ async def present_file(path: str, label: str, config: RunnableConfig) -> str:
     this chat.
 
     Args:
-        path: The same path you saved the file at with bash — normally a plain
-            relative name like "report.docx" (resolved from the conversation's
-            working directory).
+        path: The path you saved the file at with bash. A plain relative name
+            like "report.docx" or "out/chart.png" is normal, but an absolute
+            path under the working directory ("/workspace/report.docx") works
+            too — they're the same file.
         label: Brief human-readable description shown to the user (e.g.
             "Sharing the quarterly report").
     """
     thread_id = get_thread_id(config)
-    # Must be a plain relative name inside the conversation's own workspace —
-    # no absolute paths, no ".." (the sandbox rejects these too, this is the
-    # outer guard).
-    name = path.strip()
-    if name.startswith("./"):
-        name = name[2:]
+    # `/workspace` is the working directory, so "/workspace/x" == "x" — accept
+    # both (the agent mixes them). Only a path that would escape the workspace
+    # (a real absolute path, a "..") is rejected; the sandbox re-checks too.
+    name = normalize_workspace_path(path)
     from pathlib import PurePosixPath
     if name.startswith("/") or ".." in PurePosixPath(name).parts:
-        return "Error: path must be a relative name inside your workspace (no '/' prefix, no '..')."
+        return "Error: path must be inside your workspace (no '..', nothing outside /workspace)."
 
     try:
         content, mime, filename = await read_file(thread_id, name)

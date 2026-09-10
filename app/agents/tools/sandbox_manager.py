@@ -47,6 +47,23 @@ def get_thread_id(config) -> str:
     return config.get("configurable", {}).get("thread_id", "default")
 
 
+def normalize_workspace_path(path: str) -> str:
+    """Fold the ways the agent refers to a file in its workspace down to one
+    relative name.
+
+    `/workspace` is the working directory, so the model freely writes
+    `report.docx`, `./report.docx` and `/workspace/report.docx` for the same
+    file (the bash tool tells it absolute-under-/workspace is fine). Strip the
+    workspace prefix / leading `./`; leave anything that would escape (a real
+    absolute path, a `..`) for the caller's guard to reject.
+    """
+    name = path.strip()
+    for prefix in ("/workspace/", "./"):
+        if name.startswith(prefix):
+            return name[len(prefix) :]
+    return name
+
+
 async def exec_bash(thread_id: str, command: str) -> dict:
     """Returns {stdout, stderr, exit_code, timed_out}."""
     resp = await _get_client().post(

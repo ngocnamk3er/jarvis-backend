@@ -19,7 +19,9 @@ async def bash(command: str, label: str, config: RunnableConfig) -> str:
     The sandbox has Python with pandas/numpy/scipy/scikit-learn/matplotlib/
     etc. for data work, and python-docx/python-pptx/openpyxl/reportlab/fpdf2
     plus pandoc for generating .docx/.pptx/.xlsx/.pdf files. After creating a
-    file, call `present_file("report.docx", ...)` to hand it to the user.
+    file, pass its path to `present_file` to hand it to the user — a relative
+    name or the `/workspace/...` form both work, they're the same file:
+    `present_file("report.docx", ...)`.
 
     Common uses:
         bash("ls -la")

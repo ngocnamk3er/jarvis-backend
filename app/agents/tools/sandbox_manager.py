@@ -1,8 +1,12 @@
-"""HTTP client for jarvis-sandbox — one shared container running every
-conversation's bash commands in its own /workspace/{thread_id} dir. No
-per-conversation isolation (that's the point: shared resources), no session
-state to track. Same posture as file_client.py: internal-only API behind
-X-Internal-Api-Key.
+"""HTTP client for jarvis-sandbox.
+
+We talk to the sandbox *orchestrator* (Service `sandbox`, internal-only behind
+X-Internal-Api-Key). The API is unchanged — `/sandbox/exec`, `/sandbox/read`,
+`/sandbox/reset`, all keyed by thread_id — but under the hood each conversation
+now gets its own dedicated agent pod from a warm pool, not a shared container.
+Isolation is the k8s pod boundary (own namespaces, non-root, dropped caps,
+seccomp, a NetworkPolicy that blocks the rest of the cluster); the pod is
+deleted on reset / idle GC. Still no session state for us to track.
 
 Replaced OpenSandbox, which broke on this host: its nested bwrap/userns
 isolation stopped working once the kernel set
@@ -22,7 +26,9 @@ def init_client() -> None:
         headers={"X-Internal-Api-Key": settings.INTERNAL_API_KEY},
         # Longer than the 300s command timeout so the server's own timeout
         # (which returns a clean {timed_out: true}) always wins the race.
-        timeout=330.0,
+        # The extra headroom also covers the first call of a conversation,
+        # when the orchestrator may spin up a fresh agent pod.
+        timeout=360.0,
     )
 
 
@@ -64,7 +70,8 @@ async def read_file(thread_id: str, name: str) -> tuple[bytes, str, str]:
 
 
 async def reset(thread_id: str) -> None:
-    """Wipe a conversation's workspace — on /chat/stop and conversation delete."""
+    """Tear the conversation's sandbox down (deletes its pod) — on /chat/stop
+    and conversation delete."""
     try:
         resp = await _get_client().post("/sandbox/reset", json={"thread_id": thread_id})
         resp.raise_for_status()

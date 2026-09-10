@@ -16,17 +16,21 @@ async def bash(command: str, label: str, config: RunnableConfig) -> str:
     calls in this conversation. A fresh shell each call, so chain steps with
     `&&` or write a script and run it.
 
-    The sandbox has Python with pandas/numpy/scipy/scikit-learn/matplotlib/
-    etc. for data work, and python-docx/python-pptx/openpyxl/reportlab/fpdf2
-    plus pandoc for generating .docx/.pptx/.xlsx/.pdf files. After creating a
-    file, pass its path to `present_file` to hand it to the user — a relative
-    name or the `/workspace/...` form both work, they're the same file:
-    `present_file("report.docx", ...)`.
+    The environment is FIXED and OFFLINE — you cannot install packages
+    (`pip`/`uv` are removed, the filesystem is read-only, there is no network)
+    and cannot fetch anything from a URL. Work with what's provided. Available:
+    Python 3.11 with numpy, pandas, scipy, statsmodels, pyarrow, scikit-learn,
+    xgboost, lightgbm, matplotlib, seaborn, plotly, nltk (corpora bundled),
+    beautifulsoup4/lxml, python-docx, python-pptx, openpyxl, xlsxwriter,
+    reportlab, fpdf2, pillow, jinja2, and pandoc for generating
+    .docx/.pptx/.xlsx/.pdf files. After creating a file, pass its path to
+    `present_file` to hand it to the user — a relative name or the
+    `/workspace/...` form both work: `present_file("report.docx", ...)`.
 
     Common uses:
         bash("ls -la")
-        bash("pip install <pkg> -q")   # or: uv pip install <pkg>
         bash("python analyze.py")
+        bash("python -c 'import pandas as pd; print(pd.read_csv(\\"data.csv\\").describe())'")
 
     IMPORTANT — timeouts:
         A command past the 300s limit is killed (its process tree too). If a
@@ -34,7 +38,7 @@ async def bash(command: str, label: str, config: RunnableConfig) -> str:
 
     Args:
         command: Bash command to execute.
-        label: Brief human-readable description shown to the user (e.g. "Running fibonacci script", "Installing pandas").
+        label: Brief human-readable description shown to the user (e.g. "Running the analysis script", "Rendering the chart").
     """
     thread_id = get_thread_id(config)
 

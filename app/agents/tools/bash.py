@@ -1,8 +1,40 @@
 import httpx
-from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import tool
 
 from app.agents.tools.sandbox_manager import exec_bash, get_thread_id
+
+# Same threshold save_and_stub() uses for web_search/web_fetch — kept in sync
+# so "large tool output" means one thing across every tool.
+_MAX_INLINE_CHARS = 2000
+_PREVIEW_HEAD = 800
+_PREVIEW_TAIL = 400
+
+
+def _cap_output(output: str) -> str:
+    """Truncate to a head+tail preview above `_MAX_INLINE_CHARS`.
+
+    Unlike web_search/web_fetch results, bash output is cheap to regenerate —
+    same sandbox, no network, fully deterministic — so there's nothing to
+    save to a file or recall later. If the middle mattered, re-run a
+    narrower command instead (grep / head / tail / sed -n / a smaller
+    Python snippet) rather than reading the whole thing again.
+    """
+    n = len(output)
+    if n <= _MAX_INLINE_CHARS:
+        return output
+    head = output[:_PREVIEW_HEAD].rstrip()
+    tail = output[-_PREVIEW_TAIL:].lstrip()
+    omitted = n - _PREVIEW_HEAD - _PREVIEW_TAIL
+    return (
+        f"[bash output — {n:,} chars, showing head+tail]\n"
+        f"--- head ---\n{head}\n"
+        f"... [{omitted:,} chars omitted] ...\n"
+        f"--- tail ---\n{tail}\n"
+        "Nothing was saved anywhere — re-run a narrower command (grep / "
+        "head / tail / sed -n / a smaller Python snippet) instead of "
+        "reading all of this again."
+    )
 
 
 @tool
@@ -15,6 +47,11 @@ async def bash(command: str, label: str, config: RunnableConfig) -> str:
     `out/chart.png`) or an absolute one under `/workspace` persist across bash
     calls in this conversation. A fresh shell each call, so chain steps with
     `&&` or write a script and run it.
+
+    Output over ~2000 chars comes back as a head+tail preview, not the whole
+    thing — e.g. `cat`-ing a big file just shows you the ends of it. Pipe
+    through `grep`/`head`/`tail`/`sed -n` or a short Python snippet to pull
+    out the specific part you need instead of dumping a whole file.
 
     The environment is FIXED and OFFLINE — you cannot install packages
     (`pip`/`uv` are removed, the filesystem is read-only, there is no network)
@@ -60,4 +97,4 @@ async def bash(command: str, label: str, config: RunnableConfig) -> str:
     if exit_code not in (0, None) and not output:
         output = f"Command exited with code {exit_code}"
 
-    return output or "(no output)"
+    return _cap_output(output) if output else "(no output)"

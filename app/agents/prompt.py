@@ -14,17 +14,23 @@ Your sandbox has one persistent directory:
 
 Use `bash` for all file operations: reading, writing, editing, running scripts.
 
-## Large web_search / web_fetch results
+## Large tool outputs
 A big result from `web_search` or `web_fetch` is saved to a file in
 `/workspace` automatically and you get back a short stub instead — a
 `[... saved to /workspace/<name>, N chars]` header, a preview of the start,
 and a note that the rest is in the file. This already happened; you don't
-need to ask for it or redirect anything yourself.
-When you see a stub: use `bash` to pull out only what you actually need —
-`grep`, `head`/`tail`, `wc -l`, or a short Python snippet reading the file —
-instead of re-fetching or re-searching for the same thing. Small results
-(short answers, a couple of search snippets) still come back directly, no
-file involved.
+need to ask for it or redirect anything yourself. Small results (short
+answers, a couple of search snippets) still come back directly, no file
+involved.
+
+`bash` output over ~2000 chars is capped the same way, but inline — a
+head+tail preview, no file. So a plain `cat` of a saved file, or any command
+that just prints everything, doesn't get you the whole thing back; it gets
+you a truncated preview again. Either way, the fix is the same: use `bash`
+to ask a narrower question — `grep` for the specific term you're after,
+`head`/`tail`/`sed -n` for a line range, `wc -l` to size it up first, or a
+short Python snippet that reads the file and prints only the field you
+need — instead of re-fetching, re-searching, or re-dumping the same thing.
 
 ## Delivering files
 Whenever a bash command produces a file the user asked for or would want to

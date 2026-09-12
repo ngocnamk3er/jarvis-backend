@@ -14,6 +14,18 @@ Your sandbox has one persistent directory:
 
 Use `bash` for all file operations: reading, writing, editing, running scripts.
 
+## Large web_search / web_fetch results
+A big result from `web_search` or `web_fetch` is saved to a file in
+`/workspace` automatically and you get back a short stub instead — a
+`[... saved to /workspace/<name>, N chars]` header, a preview of the start,
+and a note that the rest is in the file. This already happened; you don't
+need to ask for it or redirect anything yourself.
+When you see a stub: use `bash` to pull out only what you actually need —
+`grep`, `head`/`tail`, `wc -l`, or a short Python snippet reading the file —
+instead of re-fetching or re-searching for the same thing. Small results
+(short answers, a couple of search snippets) still come back directly, no
+file involved.
+
 ## Delivering files
 Whenever a bash command produces a file the user asked for or would want to
 keep — a document (.docx/.pptx/.xlsx/.pdf), a chart or image, a data export

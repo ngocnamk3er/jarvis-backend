@@ -14,9 +14,14 @@ from app.agents.tools.sandbox_manager import exec_bash, get_thread_id
 # a real conversation needed 13 bash round-trips to locate two infobox
 # fields under the old 2,000-char cap. 20,000 gives a wide excerpt (or
 # several targeted grep hits) a real chance of landing whole.
+# Head+tail together cover 80% of the threshold (split evenly) — high
+# enough that crossing _MAX_INLINE_CHARS by a few chars doesn't fall off a
+# cliff into a tiny preview; still leaves a real gap so capping means
+# something. Must stay under _MAX_INLINE_CHARS or `omitted` below goes
+# negative.
 _MAX_INLINE_CHARS = 20_000
-_PREVIEW_HEAD = 800
-_PREVIEW_TAIL = 400
+_PREVIEW_HEAD = 8_000
+_PREVIEW_TAIL = 8_000
 
 
 def _cap_output(output: str) -> str:

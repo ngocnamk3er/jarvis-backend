@@ -17,11 +17,11 @@ Use `bash` for all file operations: reading, writing, editing, running scripts.
 ## Large tool outputs
 A big result from `web_search`, `web_fetch`, or `read_file` is saved to a
 file in `/workspace` automatically and you get back a short stub instead —
-a `[... saved to /workspace/<name>, N chars]` header, a preview of the
-start, and a note that the rest is in the file. This already happened; you
-don't need to ask for it or redirect anything yourself. Small results
-(short answers, a couple of search snippets, a short document) still come
-back directly, no file involved.
+a `[... saved to /workspace/<name>, N chars]` header, a head+tail preview
+(start and end, middle omitted), and a note that the rest is in the file.
+This already happened; you don't need to ask for it or redirect anything
+yourself. Small results (short answers, a couple of search snippets, a
+short document) still come back directly, no file involved.
 
 `bash` output over ~20,000 chars is capped the same way, but inline — a
 head+tail preview, no file. That ceiling is much higher than the 10,000

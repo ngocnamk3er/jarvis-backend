@@ -24,7 +24,12 @@ import httpx
 
 from app.agents.tools.sandbox_manager import exec_bash
 
-_PREVIEW_CHARS = 600
+# Head+tail together cover 80% of min_chars (split evenly) — same reasoning
+# as bash.py's _PREVIEW_HEAD/_PREVIEW_TAIL: high enough that crossing the
+# threshold by a few chars doesn't fall off a cliff into a tiny preview.
+# Must stay under min_chars or `omitted` below goes negative.
+_PREVIEW_HEAD = 4_000
+_PREVIEW_TAIL = 4_000
 
 # Linux caps any single execve() argv/envp string at MAX_ARG_STRLEN — 32 pages,
 # 128 KiB (131,072 bytes) on a standard 4 KiB-page kernel — independent of the
@@ -73,10 +78,12 @@ async def save_and_stub(
     # No "use bash to grep/head this" hint here — that guidance lives once,
     # in the system prompt's "Large tool outputs" section, instead of being
     # repeated verbatim on every single stub.
-    preview = content[:_PREVIEW_CHARS].rstrip()
-    omitted = n - _PREVIEW_CHARS
-    more = f"\n... [{omitted:,} more chars in the file] ..." if omitted > 0 else ""
+    head = content[:_PREVIEW_HEAD].rstrip()
+    tail = content[-_PREVIEW_TAIL:].lstrip()
+    omitted = n - _PREVIEW_HEAD - _PREVIEW_TAIL
     return (
         f"[{kind} — {n:,} chars, saved to /workspace/{filename}]\n"
-        f"--- preview ---\n{preview}{more}\n--- end preview ---"
+        f"--- head ---\n{head}\n"
+        f"... [{omitted:,} chars omitted] ...\n"
+        f"--- tail ---\n{tail}"
     )

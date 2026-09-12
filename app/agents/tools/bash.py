@@ -26,14 +26,13 @@ def _cap_output(output: str) -> str:
     head = output[:_PREVIEW_HEAD].rstrip()
     tail = output[-_PREVIEW_TAIL:].lstrip()
     omitted = n - _PREVIEW_HEAD - _PREVIEW_TAIL
+    # No "re-run a narrower command" hint here — that guidance lives once,
+    # in the system prompt's "Large tool outputs" section.
     return (
         f"[bash output — {n:,} chars, showing head+tail]\n"
         f"--- head ---\n{head}\n"
         f"... [{omitted:,} chars omitted] ...\n"
-        f"--- tail ---\n{tail}\n"
-        "Nothing was saved anywhere — re-run a narrower command (grep / "
-        "head / tail / sed -n / a smaller Python snippet) instead of "
-        "reading all of this again."
+        f"--- tail ---\n{tail}"
     )
 
 

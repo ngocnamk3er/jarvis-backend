@@ -68,12 +68,13 @@ async def save_and_stub(
     except httpx.HTTPError:
         return content  # sandbox unreachable — fall back rather than lose the result
 
+    # No "use bash to grep/head this" hint here — that guidance lives once,
+    # in the system prompt's "Large tool outputs" section, instead of being
+    # repeated verbatim on every single stub.
     preview = content[:_PREVIEW_CHARS].rstrip()
     omitted = n - _PREVIEW_CHARS
     more = f"\n... [{omitted:,} more chars in the file] ..." if omitted > 0 else ""
     return (
         f"[{kind} — {n:,} chars, saved to /workspace/{filename}]\n"
-        f"--- preview ---\n{preview}{more}\n--- end preview ---\n"
-        "Use bash to pull out what you need (grep / head / a short Python "
-        "read) instead of fetching or searching this again."
+        f"--- preview ---\n{preview}{more}\n--- end preview ---"
     )

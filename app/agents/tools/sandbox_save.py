@@ -1,18 +1,18 @@
 """Save a tool's raw output into the conversation's sandbox workspace instead
 of returning it straight into the model's context.
 
-`web_search` and `web_fetch` are the primary source of tool-output spill —
-both are told to fan out in parallel and both can each return thousands of
-characters of scraped/searched text in one shot, all of it landing in
-context on the same turn (the `ToolOutputOffloadMiddleware` stub-and-recall
-mechanism in middleware.py only helps *after* a result is a few turns old —
-it doesn't stop the initial spike). Writing the raw result to a file and
+`web_search`, `web_fetch`, and `read_file` are the tools that can each
+return thousands of characters in one shot — all of it landing in context
+on the same turn if returned directly. Writing the raw result to a file and
 handing back a short stub means the model pulls out only what it needs,
 using `bash`, instead of the whole thing landing in context up front.
 
 That only holds if the follow-up `bash` read is itself narrow — `bash.py`
 caps its own output the same way (see `_cap_output` there) so a blind `cat`
 of the saved file can't undo this by dumping it straight back into context.
+This is the only tool-output size control in the agent; there's no separate
+aging-based offload behind it, so what a tool returns here is what the
+model's context actually holds.
 """
 
 import base64

@@ -12,10 +12,15 @@ way it would with any shell -- explicit paths sidestep that entirely. See
 Read-only — no HumanInTheLoopMiddleware approval needed, same posture as
 web_search/web_fetch (unlike bash, which can mutate the sandbox)."""
 
-import httpx
-from langchain_core.tools import tool
-from langchain_core.runnables import RunnableConfig
+import re
+import uuid
 
+import httpx
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import tool
+
+from app.agents.tools.sandbox_manager import get_thread_id
+from app.agents.tools.sandbox_save import save_and_stub
 from app.clients import file_client
 
 
@@ -62,6 +67,10 @@ async def list_files(path: str, config: RunnableConfig) -> str:
 async def read_file(path: str, config: RunnableConfig) -> str:
     """Read a file's extracted text content from the user's file workspace.
 
+    A long document is saved to a file in the bash sandbox and you get back
+    a short preview instead of the whole thing — use `bash` to grep or read
+    out the part you actually need.
+
     Args:
         path: Root-relative file path, e.g. "/docs/2024/report.pdf".
     """
@@ -77,7 +86,13 @@ async def read_file(path: str, config: RunnableConfig) -> str:
         return "This file is still being processed — try again in a moment."
     if node["extracted_text"] is None:
         return f"'{node['name']}' has no extractable text (unsupported or binary file type)."
-    return node["extracted_text"]
+
+    thread_id = get_thread_id(config)
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", node["name"]).strip("-")[:40] or "file"
+    filename = f"read_{slug}_{uuid.uuid4().hex[:6]}.txt"
+    return await save_and_stub(
+        thread_id, filename, node["extracted_text"], kind=f"read_file({path!r})"
+    )
 
 
 @tool

@@ -2,10 +2,8 @@
 
 import logging
 from typing import Any, Awaitable, Callable
-from typing_extensions import NotRequired
 
-from langchain_core.callbacks import adispatch_custom_event, dispatch_custom_event
-from langchain_core.messages import AIMessage, ToolCall, ToolMessage
+from langchain.agents.middleware.tool_call_limit import ToolCallLimitState
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -14,16 +12,9 @@ from langchain.agents.middleware.types import (
     ToolCallRequest,
     hook_config,
 )
-from langchain.agents.middleware.tool_call_limit import ToolCallLimitState
-
-from app.agents.tool_offload import (
-    is_stub,
-    message_text,
-    ref_for,
-    render_stub,
-    store_namespace,
-)
-from app.core.config import settings
+from langchain_core.callbacks import adispatch_custom_event, dispatch_custom_event
+from langchain_core.messages import AIMessage, ToolCall, ToolMessage
+from typing_extensions import NotRequired
 
 logger = logging.getLogger(__name__)
 
@@ -295,116 +286,3 @@ class SoftHardToolCallLimitMiddleware(AgentMiddleware):
             await adispatch_custom_event(TOOL_CALL_LIMIT_EVENT, payload)
         return result
 
-
-class ToolOutputOffloadMiddleware(AgentMiddleware):
-    """Keep long tool results out of the model's context.
-
-    Some tools (bash, web_fetch, search) can return thousands of tokens. Once
-    such a result is a few turns old it's dead weight — it inflates every
-    subsequent model call. This middleware, on each model call, swaps any long
-    ToolMessage that is no longer among the `keep_recent` most recent tool
-    results for a short stub (head+tail preview + a ref) and stashes the full
-    text in the LangGraph store. The agent can pull the full text back with the
-    `recall_tool_output` tool if it turns out to matter.
-
-    Short tool results, and the freshest `keep_recent`, are passed through
-    untouched — the model still gets the last thing it asked for verbatim.
-
-    Non-destructive, exactly like langchain's `ContextEditingMiddleware`: only
-    the *copy* of `messages` handed to the model this turn is rewritten. The
-    persisted checkpoint keeps every ToolMessage in full, so chat_service's SSE
-    stream and the conversation history are unaffected.
-
-    This is the root agent's answer to the same problem the research subagent
-    solves by summarising — it works even when no subagent is involved.
-    """
-
-    def __init__(
-        self,
-        *,
-        max_chars: int | None = None,
-        keep_recent: int | None = None,
-        preview_head: int | None = None,
-        preview_tail: int | None = None,
-    ) -> None:
-        super().__init__()
-        self.max_chars = max_chars if max_chars is not None else settings.TOOL_OFFLOAD_MAX_CHARS
-        self.keep_recent = keep_recent if keep_recent is not None else settings.TOOL_OFFLOAD_KEEP_RECENT
-        self.head = preview_head if preview_head is not None else settings.TOOL_OFFLOAD_PREVIEW_HEAD
-        self.tail = preview_tail if preview_tail is not None else settings.TOOL_OFFLOAD_PREVIEW_TAIL
-        # refs already written to the store this process — skips redundant puts
-        # on every replay. Losing it on restart is harmless (put is an upsert).
-        self._persisted: set[str] = set()
-
-    def _targets(self, messages: list) -> list[int]:
-        """Indices of ToolMessages that should be offloaded: long enough, not a
-        stub already, and not in the most-recent `keep_recent`."""
-        tool_idxs = [i for i, m in enumerate(messages) if isinstance(m, ToolMessage)]
-        protected = set(tool_idxs[-self.keep_recent:]) if self.keep_recent else set()
-        return [
-            i
-            for i in tool_idxs
-            if i not in protected
-            and not is_stub(messages[i])
-            and len(message_text(messages[i].content)) > self.max_chars
-        ]
-
-    async def _apply(self, request: ModelRequest) -> ModelRequest:
-        if not settings.TOOL_OFFLOAD_ENABLED or not request.messages:
-            return request
-
-        targets = self._targets(list(request.messages))
-        if not targets:
-            return request
-
-        try:
-            from langgraph.config import get_config, get_store
-
-            store = get_store()
-            thread_id = get_config().get("configurable", {}).get("thread_id", "default")
-        except (RuntimeError, ValueError):
-            return request  # no ambient store/config (e.g. an aget_state path)
-        if store is None:
-            return request
-
-        ns = store_namespace(thread_id)
-        # Shallow copy: only the target indices are swapped, each for a fresh
-        # `model_copy`. The originals are never mutated, so the checkpoint (and
-        # every other message) is untouched.
-        edited = list(request.messages)
-        for i in targets:
-            msg: ToolMessage = edited[i]
-            text = message_text(msg.content)
-            ref = ref_for(msg.tool_call_id)
-            if ref not in self._persisted:
-                try:
-                    await store.aput(ns, ref, {
-                        "content": text,
-                        "tool": msg.name or "",
-                        "tool_call_id": msg.tool_call_id,
-                    })
-                    self._persisted.add(ref)
-                except Exception:  # noqa: BLE001 — a store hiccup must not drop the turn
-                    logger.exception("tool-output offload: store.aput failed, keeping full text")
-                    continue
-            edited[i] = msg.model_copy(update={
-                "content": render_stub(
-                    name=msg.name or "tool", ref=ref, text=text,
-                    head=self.head, tail=self.tail,
-                ),
-                "artifact": None,
-            })
-        return request.override(messages=edited)
-
-    async def awrap_model_call(
-        self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]
-    ) -> ModelResponse:
-        return await handler(await self._apply(request))
-
-    def wrap_model_call(
-        self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]
-    ) -> ModelResponse:
-        # jarvis always drives the graph via astream_events (async); the sync
-        # path is only hit by tooling that never reaches a model call. Pass
-        # through rather than run the async store from a sync context.
-        return handler(request)

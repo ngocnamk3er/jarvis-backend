@@ -4,9 +4,17 @@ from langchain_core.tools import tool
 
 from app.agents.tools.sandbox_manager import exec_bash, get_thread_id
 
-# Same threshold save_and_stub() uses for web_search/web_fetch — kept in sync
-# so "large tool output" means one thing across every tool.
-_MAX_INLINE_CHARS = 2000
+# Much higher than save_and_stub()'s threshold (10,000 chars, for
+# web_search/web_fetch/read_file) — bash is how the model extracts what it
+# needs from a saved file, so capping it that tight just pushes the "can't
+# see the row I'm looking for" problem down a level: a mid-sized excerpt
+# (e.g. a 40-line slice of a Wikipedia infobox) can easily clear 10-20k
+# chars while the one field being searched for lands in the omitted middle,
+# forcing round after round of blind narrowing to find it. Verified live:
+# a real conversation needed 13 bash round-trips to locate two infobox
+# fields under the old 2,000-char cap. 20,000 gives a wide excerpt (or
+# several targeted grep hits) a real chance of landing whole.
+_MAX_INLINE_CHARS = 20_000
 _PREVIEW_HEAD = 800
 _PREVIEW_TAIL = 400
 
@@ -47,10 +55,11 @@ async def bash(command: str, label: str, config: RunnableConfig) -> str:
     calls in this conversation. A fresh shell each call, so chain steps with
     `&&` or write a script and run it.
 
-    Output over ~2000 chars comes back as a head+tail preview, not the whole
-    thing — e.g. `cat`-ing a big file just shows you the ends of it. Pipe
-    through `grep`/`head`/`tail`/`sed -n` or a short Python snippet to pull
-    out the specific part you need instead of dumping a whole file.
+    Output over ~20,000 chars comes back as a head+tail preview, not the
+    whole thing — e.g. `cat`-ing a very large file just shows you the ends
+    of it. Pipe through `grep`/`head`/`tail`/`sed -n` or a short Python
+    snippet to pull out the specific part you need instead of dumping a
+    whole file.
 
     The environment is FIXED and OFFLINE — you cannot install packages
     (`pip`/`uv` are removed, the filesystem is read-only, there is no network)

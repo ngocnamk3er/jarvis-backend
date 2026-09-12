@@ -7,12 +7,14 @@ on the same turn if returned directly. Writing the raw result to a file and
 handing back a short stub means the model pulls out only what it needs,
 using `bash`, instead of the whole thing landing in context up front.
 
-That only holds if the follow-up `bash` read is itself narrow — `bash.py`
-caps its own output the same way (see `_cap_output` there) so a blind `cat`
-of the saved file can't undo this by dumping it straight back into context.
-This is the only tool-output size control in the agent; there's no separate
-aging-based offload behind it, so what a tool returns here is what the
-model's context actually holds.
+That only holds if the follow-up `bash` read is itself bounded — `bash.py`
+caps its own output too (see `_cap_output` there), just at a much higher
+threshold, since `bash` is how the model actually extracts what it needs
+from a saved file — capping it as tightly as the fetch/search/read tools
+would just reintroduce the "can't see the row I'm looking for" problem one
+level down. This is the only tool-output size control in the agent; there's
+no separate aging-based offload behind it, so what a tool returns here is
+what the model's context actually holds.
 """
 
 import base64
@@ -38,7 +40,7 @@ _CHUNK_B64_CHARS = 60_000
 
 
 async def save_and_stub(
-    thread_id: str, filename: str, content: str, *, kind: str, min_chars: int = 2000
+    thread_id: str, filename: str, content: str, *, kind: str, min_chars: int = 10_000
 ) -> str:
     """Return `content` unchanged if it's short enough to not matter. Above
     `min_chars`, write it to `/workspace/<filename>` in the sandbox and

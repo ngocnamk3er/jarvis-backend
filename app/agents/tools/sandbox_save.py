@@ -24,6 +24,18 @@ from app.agents.tools.sandbox_manager import exec_bash
 
 _PREVIEW_CHARS = 600
 
+# Linux caps any single execve() argv/envp string at MAX_ARG_STRLEN — 32 pages,
+# 128 KiB (131,072 bytes) on a standard 4 KiB-page kernel — independent of the
+# much larger total ARG_MAX. The sandbox agent runs the write via
+# `asyncio.create_subprocess_exec("bash", "-c", command, ...)`, so `command`
+# itself is one argv string: a base64 blob past that length makes execve()
+# fail with `OSError: [Errno 7] Argument list too long` (E2BIG) before the
+# process even starts — verified live against the sandbox agent's own
+# traceback. Chunk size is base64 chars (a multiple of 4, so each chunk
+# decodes independently to the right bytes) chosen with wide headroom under
+# the 131,072-byte limit once wrapped in `printf '%s' '...' | base64 -d >> f`.
+_CHUNK_B64_CHARS = 60_000
+
 
 async def save_and_stub(
     thread_id: str, filename: str, content: str, *, kind: str, min_chars: int = 2000
@@ -37,19 +49,24 @@ async def save_and_stub(
     if n <= min_chars:
         return content
 
+    # Content travels base64-piped through `bash -c` — the base64 alphabet
+    # has no shell metacharacters, so this is safe regardless of what's
+    # inside (quotes, backticks, `$`, binary-ish bytes from a mis-decoded
+    # page) without needing to escape the content itself. Written in
+    # _CHUNK_B64_CHARS-sized pieces (first truncates, rest append) rather
+    # than one shot — see _CHUNK_B64_CHARS above for why.
+    b64 = base64.b64encode(content.encode("utf-8", errors="replace")).decode()
+    quoted_name = shlex.quote(filename)
     try:
-        # Content travels base64-piped through `bash -c` — the base64
-        # alphabet has no shell metacharacters, so this is safe regardless of
-        # what's inside (quotes, backticks, `$`, binary-ish bytes from a
-        # mis-decoded page) without needing to escape the content itself.
-        b64 = base64.b64encode(content.encode("utf-8", errors="replace")).decode()
-        command = f"printf '%s' '{b64}' | base64 -d > {shlex.quote(filename)}"
-        result = await exec_bash(thread_id, command)
+        for i in range(0, len(b64), _CHUNK_B64_CHARS):
+            chunk = b64[i : i + _CHUNK_B64_CHARS]
+            redirect = ">" if i == 0 else ">>"
+            command = f"printf '%s' '{chunk}' | base64 -d {redirect} {quoted_name}"
+            result = await exec_bash(thread_id, command)
+            if result.get("timed_out") or result.get("exit_code") not in (0, None):
+                return content  # write failed partway — fall back, don't leave a partial file
     except httpx.HTTPError:
         return content  # sandbox unreachable — fall back rather than lose the result
-
-    if result.get("timed_out") or result.get("exit_code") not in (0, None):
-        return content  # write failed for some other reason — same fallback
 
     preview = content[:_PREVIEW_CHARS].rstrip()
     omitted = n - _PREVIEW_CHARS

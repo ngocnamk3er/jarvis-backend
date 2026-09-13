@@ -40,8 +40,13 @@ class Settings(BaseSettings):
     # Replaced OpenSandbox (its bwrap/userns isolation broke on this host).
     SANDBOX_SERVICE_URL: str = "http://localhost:8003"
 
-    # kubernetes-sigs/agent-sandbox — not yet wired into any tool, see
-    # sandbox_manager_agentsandbox.py / AGENTSANDBOX-MIGRATION.md.
+    # "legacy" (jarvis-sandbox's own orchestrator) or "agentsandbox"
+    # (kubernetes-sigs/agent-sandbox) — see sandbox_manager.py's dispatcher
+    # docstring. Flipping this is the entire cutover/rollback switch.
+    SANDBOX_BACKEND: str = "legacy"
+
+    # kubernetes-sigs/agent-sandbox — used only when SANDBOX_BACKEND is
+    # "agentsandbox", see sandbox_manager_agentsandbox.py / AGENTSANDBOX-MIGRATION.md.
     AGENTSANDBOX_NAMESPACE: str = "default"
     AGENTSANDBOX_WARMPOOL: str = "jarvis-agentsandbox-pool"
 

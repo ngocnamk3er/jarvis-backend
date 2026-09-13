@@ -1,97 +1,60 @@
-"""HTTP client for jarvis-sandbox.
+"""Dispatches every sandbox call to whichever backend `settings.SANDBOX_BACKEND`
+names — `"legacy"` (jarvis-sandbox's own orchestrator, default) or
+`"agentsandbox"` (kubernetes-sigs/agent-sandbox, see
+`sandbox_manager_agentsandbox.py` / AGENTSANDBOX-MIGRATION.md in jarvis-sandbox).
 
-We talk to the sandbox *orchestrator* (Service `sandbox`, internal-only behind
-X-Internal-Api-Key). The API is unchanged — `/sandbox/exec`, `/sandbox/read`,
-`/sandbox/reset`, all keyed by thread_id — but under the hood each conversation
-now gets its own dedicated agent pod from a warm pool, not a shared container.
-Isolation is the k8s pod boundary (own namespaces, non-root, dropped caps,
-seccomp, a NetworkPolicy that blocks the rest of the cluster); the pod is
-deleted on reset / idle GC. Still no session state for us to track.
+Every call site (bash.py, present_file.py, files.py, web_search.py,
+web_fetch.py, sandbox_save.py, chat_service.py, conversation_service.py,
+chat.py, main.py) imports from here and never needs to know which backend is
+live. Flipping `SANDBOX_BACKEND` — a ConfigMap value, no image rebuild — is
+the entire cutover switch, and flipping it back is the entire rollback.
 
-Replaced OpenSandbox, which broke on this host: its nested bwrap/userns
-isolation stopped working once the kernel set
-apparmor_restrict_unprivileged_userns=1 (Ubuntu 24.04+ default).
+The `agentsandbox` module is imported lazily, only when actually selected —
+it hard-requires the optional `k8s-agent-sandbox` package (raises ImportError
+at import time if missing, see that module's docstring) and talks to CRDs
+jarvis-backend doesn't have RBAC for by default. With the default
+`SANDBOX_BACKEND=legacy`, none of that is ever touched, so a deploy that
+hasn't picked up the new dependency yet still starts up and runs exactly as
+before this dispatcher existed.
 """
-import httpx
 
+from app.agents.tools import sandbox_manager_legacy as _legacy
 from app.core.config import settings
 
-_client: httpx.AsyncClient | None = None
+
+def _backend():
+    if settings.SANDBOX_BACKEND == "agentsandbox":
+        from app.agents.tools import sandbox_manager_agentsandbox as _agentsandbox
+
+        return _agentsandbox
+    return _legacy
 
 
 def init_client() -> None:
-    global _client
-    _client = httpx.AsyncClient(
-        base_url=f"{settings.SANDBOX_SERVICE_URL}{settings.API_PREFIX}",
-        headers={"X-Internal-Api-Key": settings.INTERNAL_API_KEY},
-        # Longer than the 300s command timeout so the server's own timeout
-        # (which returns a clean {timed_out: true}) always wins the race.
-        # The extra headroom also covers the first call of a conversation,
-        # when the orchestrator may spin up a fresh agent pod.
-        timeout=360.0,
-    )
+    _backend().init_client()
 
 
 async def close_client() -> None:
-    if _client is not None:
-        await _client.aclose()
-
-
-def _get_client() -> httpx.AsyncClient:
-    if _client is None:
-        raise RuntimeError("sandbox client not initialised")
-    return _client
+    await _backend().close_client()
 
 
 def get_thread_id(config) -> str:
-    return config.get("configurable", {}).get("thread_id", "default")
+    return _backend().get_thread_id(config)
 
 
 def normalize_workspace_path(path: str) -> str:
-    """Fold the ways the agent refers to a file in its workspace down to one
-    relative name.
-
-    `/workspace` is the working directory, so the model freely writes
-    `report.docx`, `./report.docx` and `/workspace/report.docx` for the same
-    file (the bash tool tells it absolute-under-/workspace is fine). Strip the
-    workspace prefix / leading `./`; leave anything that would escape (a real
-    absolute path, a `..`) for the caller's guard to reject.
-    """
-    name = path.strip()
-    for prefix in ("/workspace/", "./"):
-        if name.startswith(prefix):
-            return name[len(prefix) :]
-    return name
+    return _backend().normalize_workspace_path(path)
 
 
 async def exec_bash(thread_id: str, command: str) -> dict:
     """Returns {stdout, stderr, exit_code, timed_out}."""
-    resp = await _get_client().post(
-        "/sandbox/exec", json={"thread_id": thread_id, "command": command}
-    )
-    resp.raise_for_status()
-    return resp.json()
+    return await _backend().exec_bash(thread_id, command)
 
 
 async def read_file(thread_id: str, name: str) -> tuple[bytes, str, str]:
-    """Returns (bytes, mime_type, filename). Raises httpx.HTTPStatusError on
-    404 (not found) / 400 (dir, too large, path escape)."""
-    resp = await _get_client().get("/sandbox/read", params={"thread_id": thread_id, "name": name})
-    resp.raise_for_status()
-    mime = resp.headers.get("content-type", "application/octet-stream")
-    disposition = resp.headers.get("content-disposition", "")
-    filename = name
-    if 'filename="' in disposition:
-        filename = disposition.split('filename="', 1)[1].split('"', 1)[0]
-    return resp.content, mime, filename
+    """Returns (bytes, mime_type, filename)."""
+    return await _backend().read_file(thread_id, name)
 
 
 async def reset(thread_id: str) -> None:
-    """Tear the conversation's sandbox down (deletes its pod) — on /chat/stop
-    and conversation delete."""
-    try:
-        resp = await _get_client().post("/sandbox/reset", json={"thread_id": thread_id})
-        resp.raise_for_status()
-    except httpx.HTTPError:
-        # Best-effort cleanup — a sandbox hiccup must not fail the stop/delete.
-        pass
+    await _backend().reset(thread_id)

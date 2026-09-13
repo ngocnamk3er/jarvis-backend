@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     # Replaced OpenSandbox (its bwrap/userns isolation broke on this host).
     SANDBOX_SERVICE_URL: str = "http://localhost:8003"
 
+    # kubernetes-sigs/agent-sandbox — not yet wired into any tool, see
+    # sandbox_manager_agentsandbox.py / AGENTSANDBOX-MIGRATION.md.
+    AGENTSANDBOX_NAMESPACE: str = "default"
+    AGENTSANDBOX_WARMPOOL: str = "jarvis-agentsandbox-pool"
+
     class Config:
         env_file = ".env"
         case_sensitive = True

@@ -3,12 +3,18 @@ implementation of sandbox_manager.py's public surface (exec_bash, read_file,
 reset, get_thread_id, normalize_workspace_path), talking to agent-sandbox's
 controller instead of jarvis-sandbox's own orchestrator.
 
-Not wired into any tool yet — see AGENTSANDBOX-MIGRATION.md (jarvis-sandbox
-repo) Phase 2 step B/F for the swap-in plan and everything this still needs
-before that (RBAC, NetworkPolicy, the read_file 404-vs-empty-dir gap noted
-below). Written against `k8s-agent-sandbox`'s *actual* installed behavior,
-verified live against a real cluster while building this — not the docs
-site, which is stale/inconsistent in several places (see the migration doc).
+Selected via `sandbox_manager.py`'s dispatcher when `SANDBOX_BACKEND=agentsandbox`
+(default is `"legacy"` — this module isn't imported at all until that flag
+is set). See AGENTSANDBOX-MIGRATION.md (jarvis-sandbox repo) Phase 2 step
+B/F for everything still needed before flipping that flag for real traffic
+(RBAC — deliberately not auto-applied, see jarvis-deploy's
+agentsandbox-application.yaml — NetworkPolicy, the read_file
+404-vs-empty-dir gap noted below, and an in-cluster verification of
+`SandboxInClusterConnectionConfig` through this exact module, not just the
+SDK directly). Written against `k8s-agent-sandbox`'s *actual* installed
+behavior, verified live against a real cluster while building this — not
+the docs site, which is stale/inconsistent in several places (see the
+migration doc).
 
 Design decisions, and why — each verified live, not just read off docs:
 

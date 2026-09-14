@@ -67,6 +67,7 @@ path.
 """
 
 import re
+import shlex
 
 from k8s_agent_sandbox import AsyncSandboxClient
 from k8s_agent_sandbox.exceptions import SandboxRequestError
@@ -147,8 +148,20 @@ async def _get_or_create_sandbox(thread_id: str):
 async def exec_bash(thread_id: str, command: str) -> dict:
     """Returns {stdout, stderr, exit_code, timed_out}."""
     sandbox = await _get_or_create_sandbox(thread_id)
+    # Some sandbox server images run the command via shlex.split() + subprocess
+    # directly, not a real shell — confirmed live 2026-09-15 against
+    # agent-sandbox's own stock python-runtime-sandbox (its main.py does
+    # exactly this): `&&`, `|`, `>`, and heredocs all silently misbehave
+    # (e.g. "pwd && ls -la ~" makes pwd receive "-la" as a bogus flag, since
+    # shlex.split just tokenizes on whitespace/quotes with zero shell
+    # semantics). Wrapping as `bash -c '<command>'` makes that same
+    # shlex.split produce exactly ['bash', '-c', '<command>'], so bash itself
+    # parses the shell syntax. Harmless on jarvis's own agentsandbox_server.py,
+    # which already runs `bash -c <command>` server-side — this just adds one
+    # extra (nested) bash -c layer there, not a behavior change.
+    wrapped = "bash -c " + shlex.quote(command)
     try:
-        result = await sandbox.commands.run(command, timeout=300)
+        result = await sandbox.commands.run(wrapped, timeout=300)
     except SandboxRequestError as e:
         # The SDK has no graceful timeout result (see module docstring) —
         # only ever raises. A real connectivity failure looks the same to

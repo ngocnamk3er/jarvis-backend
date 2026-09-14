@@ -12,26 +12,33 @@ is stale/inconsistent in several places (see the migration doc).
 
 Design decisions, and why — each verified live, not just read off docs:
 
-- **`SandboxInClusterConnectionConfig`, not the router.** Tried routing
-  through `sandbox-router-svc` instead (`SandboxDirectConnectionConfig`) —
-  reasonable-looking on paper, since every sandbox this module touches
-  *is* claimed through `create_sandbox()`, not addressed by a guessed
-  name. Verified live anyway, from a real jarvis-backend pod, with a
-  genuinely SDK-claimed sandbox and the exact headers the SDK sends
-  (`X-Sandbox-ID`/`-Namespace`/`-Port`) — still 502'd:
-  `{"detail":"Could not connect to the backend sandbox: <pod>"}`. Root
-  cause, found by reading the *actual running* router's logs, not just
-  its source: the deployed image (`sandbox-router:latest-main`, a
-  perpetually-rebuilt staging tag) turned out to be an old Python build
-  that falls straight to `<id>.<namespace>.svc.cluster.local` DNS — which
-  never resolves (no per-Sandbox Service exists) — with no informer-backed
-  pod-IP cache at all. The *source* at tag `v1.0.2` (matching the
-  installed controller) is a Go rewrite that does have that cache and
-  would very likely make router-mode work — but that image isn't what's
-  deployed. Revisit router mode once that's actually running; until then
-  `SandboxInClusterConnectionConfig` (client resolves the pod IP itself
-  from the Sandbox's own status, bypassing the router entirely) is the
-  one confirmed to work.
+- **`SandboxDirectConnectionConfig` through the router, not
+  `SandboxInClusterConnectionConfig` — reversed 2026-09-15, on purpose,
+  for security, not convenience.** An earlier pass here used
+  `SandboxInClusterConnectionConfig` (client resolves the pod IP itself,
+  bypassing the router) because the *deployed* router image
+  (`sandbox-router:latest-main`, a perpetually-rebuilt staging tag) turned
+  out to be an old Python build with no pod-IP cache — router-mode 502'd
+  every time. That was true, but going pod-direct has a much bigger cost
+  than the 502s it avoided: **agent-sandbox's authorization model lives
+  entirely in the router** (`authz.Authorizer`, see sandbox-router's own
+  README) — individual sandbox pods (`agentsandbox_server.py`, and
+  agent-sandbox's own stock `python-runtime-sandbox`) are deliberately
+  unauthenticated, trusting NetworkPolicy + the router to be the only
+  thing that can reach them. Bypassing the router bypasses that
+  authorization entirely. Confirmed live 2026-09-15: from inside one
+  sandbox pod, `curl`ing another live sandbox pod's IP directly on
+  :8888 — no token, no claim, nothing — successfully read its files
+  *and* ran arbitrary commands in it. Any conversation could reach any
+  other conversation's sandbox, full read/write/exec, by just knowing
+  (or scanning for) its pod IP. This is *worse* than the router's 502s,
+  not better. Fix: build the router from the `v1.0.2` source tag instead
+  (the Go rewrite has the pod-IP cache the staging image lacks) and route
+  through it with `--authz-mode=tokenreview`, using jarvis-backend's own
+  ServiceAccount token as the bearer credential (see `_auth_headers()`
+  below) — the same RBAC already applied for direct k8s-API access
+  (`sandboxclaims`/`sandboxes`) doubles as router authentication, no new
+  secret to provision.
 
 - **A Kubernetes label carries the `thread_id -> claim_name` mapping,
   not a database.** `create_sandbox()` always generates its own random
@@ -71,7 +78,7 @@ import shlex
 
 from k8s_agent_sandbox import AsyncSandboxClient
 from k8s_agent_sandbox.exceptions import SandboxRequestError
-from k8s_agent_sandbox.models import SandboxInClusterConnectionConfig
+from k8s_agent_sandbox.models import SandboxDirectConnectionConfig
 
 from app.core.config import settings
 
@@ -79,12 +86,33 @@ _client: AsyncSandboxClient | None = None
 
 _THREAD_LABEL = "jarvis-thread"
 _CLAIM_READY_TIMEOUT = 180  # generous first-claim cold start; adopting a warm pod is much faster
+# In-cluster DNS for the agent-sandbox-system sandbox-router Service.
+_ROUTER_URL = "http://sandbox-router-svc.agent-sandbox-system.svc.cluster.local:8080"
+# The standard path every pod gets its ServiceAccount token projected to —
+# same identity the RBAC for sandboxclaims/sandboxes was granted to (see
+# AGENTSANDBOX-MIGRATION.md). Read fresh on every call, not cached: this is
+# a *projected* token (kubelet auto-rotates it, ~1h by default per
+# ServiceAccountTokenExpiration), so a value cached at startup would
+# eventually be rejected by the router's TokenReview check.
+_SA_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+
+def _auth_headers() -> dict[str, str]:
+    try:
+        with open(_SA_TOKEN_PATH) as f:
+            token = f.read().strip()
+    except OSError:
+        # Local dev / no ServiceAccount mounted — let the router's own
+        # --authz-tokenreview-require-token setting decide whether a
+        # tokenless request is allowed; don't crash the whole call over it.
+        return {}
+    return {"Authorization": f"Bearer {token}"}
 
 
 def init_client() -> None:
     global _client
     _client = AsyncSandboxClient(
-        connection_config=SandboxInClusterConnectionConfig(server_port=8888),
+        connection_config=SandboxDirectConnectionConfig(api_url=_ROUTER_URL, server_port=8888),
     )
 
 
@@ -136,13 +164,23 @@ async def _get_or_create_sandbox(thread_id: str):
     label = _label_value(thread_id)
     existing = await client.list_all_sandboxes(namespace, label_selector=f"{_THREAD_LABEL}={label}")
     if existing:
-        return await client.get_sandbox(existing[0], namespace)
-    return await client.create_sandbox(
-        warmpool=settings.AGENTSANDBOX_WARMPOOL,
-        namespace=namespace,
-        sandbox_ready_timeout=_CLAIM_READY_TIMEOUT,
-        labels={_THREAD_LABEL: label},
-    )
+        sandbox = await client.get_sandbox(existing[0], namespace)
+    else:
+        sandbox = await client.create_sandbox(
+            warmpool=settings.AGENTSANDBOX_WARMPOOL,
+            namespace=namespace,
+            sandbox_ready_timeout=_CLAIM_READY_TIMEOUT,
+            labels={_THREAD_LABEL: label},
+        )
+    # Claim/lookup above talks to the k8s API directly (create_sandbox,
+    # list_all_sandboxes, get_sandbox) — this only covers the HTTP path
+    # (commands.run / files.read/write) that actually goes to the router.
+    # No first-class SDK API for this (SandboxDirectConnectionConfig has no
+    # headers field) — sandbox.connector is a plain instance attribute
+    # (commands and files share the one connector, see async_sandbox.py),
+    # so this reaches in and sets it directly.
+    sandbox.connector.client.headers.update(_auth_headers())
+    return sandbox
 
 
 async def exec_bash(thread_id: str, command: str) -> dict:

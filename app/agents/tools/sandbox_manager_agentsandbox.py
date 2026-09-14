@@ -5,16 +5,17 @@ controller instead of jarvis-sandbox's own orchestrator.
 
 Selected via `sandbox_manager.py`'s dispatcher when `SANDBOX_BACKEND=agentsandbox`
 (default is `"legacy"` — this module isn't imported at all until that flag
-is set). See AGENTSANDBOX-MIGRATION.md (jarvis-sandbox repo) Phase 2 step
-B/F for everything still needed before flipping that flag for real traffic
-(RBAC — deliberately not auto-applied, see jarvis-deploy's
-agentsandbox-application.yaml — NetworkPolicy, the read_file
-404-vs-empty-dir gap noted below, and an in-cluster verification of
-`SandboxInClusterConnectionConfig` through this exact module, not just the
-SDK directly). Written against `k8s-agent-sandbox`'s *actual* installed
-behavior, verified live against a real cluster while building this — not
-the docs site, which is stale/inconsistent in several places (see the
-migration doc).
+is set). RBAC applied, and the full path — `exec_bash()` through this exact
+module, from a real jarvis-backend pod, `SANDBOX_BACKEND` overridden just
+for that one call — verified live 2026-09-14: created a claim, ran
+`python3 -c "print(6*7)" && whoami && hostname`, got `42` / `sandbox` /
+the real pod name back, clean exit. See AGENTSANDBOX-MIGRATION.md (jarvis-sandbox
+repo) Phase 2 step F for what's still left before flipping the flag for
+*real* traffic (the read_file 404-vs-empty-dir gap noted below is the main
+one; RBAC and the in-cluster connection path are no longer open questions).
+Written against `k8s-agent-sandbox`'s *actual* installed behavior, verified
+live against a real cluster while building this — not the docs site, which
+is stale/inconsistent in several places (see the migration doc).
 
 Design decisions, and why — each verified live, not just read off docs:
 
@@ -101,6 +102,7 @@ def init_client() -> None:
 async def close_client() -> None:
     if _client is not None:
         await _client.delete_all()
+        await _client.close()
 
 
 def _get_client() -> AsyncSandboxClient:

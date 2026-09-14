@@ -36,17 +36,11 @@ class Settings(BaseSettings):
 
     LLM_CACHE: bool = False
 
-    # jarvis-sandbox — one shared container backing the bash tool + present_file.
-    # Replaced OpenSandbox (its bwrap/userns isolation broke on this host).
-    SANDBOX_SERVICE_URL: str = "http://localhost:8003"
-
-    # "legacy" (jarvis-sandbox's own orchestrator) or "agentsandbox"
-    # (kubernetes-sigs/agent-sandbox) — see sandbox_manager.py's dispatcher
-    # docstring. Flipping this is the entire cutover/rollback switch.
-    SANDBOX_BACKEND: str = "legacy"
-
-    # kubernetes-sigs/agent-sandbox — used only when SANDBOX_BACKEND is
-    # "agentsandbox", see sandbox_manager_agentsandbox.py / AGENTSANDBOX-MIGRATION.md.
+    # kubernetes-sigs/agent-sandbox — backs the bash tool + present_file, one
+    # dedicated sandbox pod per conversation. See sandbox_manager.py and
+    # jarvis-sandbox's AGENTSANDBOX-MIGRATION.md. Replaced jarvis-sandbox's
+    # own orchestrator (cutover 2026-09-14), which itself replaced OpenSandbox
+    # (its bwrap/userns isolation broke on this host).
     AGENTSANDBOX_NAMESPACE: str = "default"
     AGENTSANDBOX_WARMPOOL: str = "jarvis-agentsandbox-pool"
 

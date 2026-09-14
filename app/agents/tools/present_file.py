@@ -1,8 +1,8 @@
 import json
 
-import httpx
-from langchain_core.tools import tool
+from k8s_agent_sandbox.exceptions import SandboxRequestError
 from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import tool
 
 from app.agents.tools.sandbox_manager import get_thread_id, normalize_workspace_path, read_file
 
@@ -32,19 +32,27 @@ async def present_file(path: str, label: str, config: RunnableConfig) -> str:
     # (a real absolute path, a "..") is rejected; the sandbox re-checks too.
     name = normalize_workspace_path(path)
     from pathlib import PurePosixPath
+
     if name.startswith("/") or ".." in PurePosixPath(name).parts:
         return "Error: path must be inside your workspace (no '..', nothing outside /workspace)."
 
     try:
         content, mime, filename = await read_file(thread_id, name)
-    except httpx.HTTPStatusError as e:
-        return f"Error: {e.response.text}"
-    except httpx.HTTPError as e:
-        return f"Error: sandbox unavailable ({e})."
+    except SandboxRequestError as e:
+        detail = e.response.text if e.response is not None else str(e)
+        return f"Error: {detail}"
 
     # thread_id travels in the payload so the frontend download link
     # (GET /api/v1/chat/sandbox-file) works on reload too, without any extra
     # plumbing through chat_service / serialize_messages.
     return json.dumps(
-        {"__file__": {"name": filename, "mime": mime, "size": len(content), "path": name, "thread_id": thread_id}}
+        {
+            "__file__": {
+                "name": filename,
+                "mime": mime,
+                "size": len(content),
+                "path": name,
+                "thread_id": thread_id,
+            }
+        }
     )

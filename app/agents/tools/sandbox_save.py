@@ -20,8 +20,6 @@ what the model's context actually holds.
 import base64
 import shlex
 
-import httpx
-
 from app.agents.tools.sandbox_manager import exec_bash
 
 # Head+tail together cover 80% of min_chars (split evenly) — same reasoning
@@ -64,16 +62,13 @@ async def save_and_stub(
     # than one shot — see _CHUNK_B64_CHARS above for why.
     b64 = base64.b64encode(content.encode("utf-8", errors="replace")).decode()
     quoted_name = shlex.quote(filename)
-    try:
-        for i in range(0, len(b64), _CHUNK_B64_CHARS):
-            chunk = b64[i : i + _CHUNK_B64_CHARS]
-            redirect = ">" if i == 0 else ">>"
-            command = f"printf '%s' '{chunk}' | base64 -d {redirect} {quoted_name}"
-            result = await exec_bash(thread_id, command)
-            if result.get("timed_out") or result.get("exit_code") not in (0, None):
-                return content  # write failed partway — fall back, don't leave a partial file
-    except httpx.HTTPError:
-        return content  # sandbox unreachable — fall back rather than lose the result
+    for i in range(0, len(b64), _CHUNK_B64_CHARS):
+        chunk = b64[i : i + _CHUNK_B64_CHARS]
+        redirect = ">" if i == 0 else ">>"
+        command = f"printf '%s' '{chunk}' | base64 -d {redirect} {quoted_name}"
+        result = await exec_bash(thread_id, command)
+        if result.get("timed_out") or result.get("exit_code") not in (0, None):
+            return content  # write failed partway — fall back, don't leave a partial file
 
     # No "use bash to grep/head this" hint here — that guidance lives once,
     # in the system prompt's "Large tool outputs" section, instead of being

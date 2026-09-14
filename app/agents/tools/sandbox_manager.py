@@ -51,13 +51,19 @@ Design decisions, and why — each verified live, not just read off docs:
   Caught here and translated to a `{"timed_out": True, ...}` shape so
   `bash.py` doesn't need to special-case this module.
 
-Known gap, not yet resolved: `agentsandbox_server.py`'s `/download/<path>`
-returns a real 404 (via `FileNotFoundError`) for a missing file, which
-`httpx`/`requests` surfaces as an `HTTPStatusError` — `read_file()` below
-re-raises that, matching this module's documented contract ("Raises
-httpx.HTTPStatusError on 404"). Not yet verified against the *directory*
-(400) case through this path — do that before relying on it for
-`present_file`'s existing error handling.
+`read_file()` doesn't catch anything itself — a 404 (missing file) or 400
+(path is a directory) from `agentsandbox_server.py`'s `/download/<path>`
+surfaces as `k8s_agent_sandbox.exceptions.SandboxRequestError` (the SDK
+wraps every non-2xx response in this, `.status_code` set from the real
+HTTP status — confirmed by reading `async_connector.py`'s `send_request()`
+directly, not assumed). **Not** `httpx.HTTPStatusError` — an earlier version of this docstring
+claimed that, which was never actually true for `AsyncSandboxClient`, and
+left `present_file.py`/`chat.py`'s `/sandbox-file` endpoint catching the
+wrong exception type from the moment the cutover went live until this got
+read carefully (2026-09-15) — no one had hit a missing file yet. Both are
+fixed to catch `SandboxRequestError` now. Verified against the 404 case
+live; the *directory* (400) case still hasn't been exercised through this
+path.
 """
 
 import re

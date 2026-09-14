@@ -1,4 +1,3 @@
-import httpx
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
@@ -92,10 +91,7 @@ async def bash(command: str, label: str, config: RunnableConfig) -> str:
     """
     thread_id = get_thread_id(config)
 
-    try:
-        result = await exec_bash(thread_id, command)
-    except httpx.HTTPError as e:
-        return f"Error: sandbox unavailable ({e})."
+    result = await exec_bash(thread_id, command)
 
     if result.get("timed_out"):
         return "Error: command timed out (300s limit) and was killed."

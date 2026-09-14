@@ -1,14 +1,20 @@
 from pathlib import PurePosixPath
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
+from k8s_agent_sandbox.exceptions import SandboxRequestError
 
-from app.api.deps import CurrentUser, get_current_user
 from app.agents.tools import sandbox_manager
-from app.schemas.chat import ChatRequest, ResumeRequest, ClarifyResumeRequest, StopRequest, AVAILABLE_MODELS
-from app.services.chat_service import chat_service
+from app.api.deps import CurrentUser, get_current_user
 from app.clients import conversation_client
+from app.schemas.chat import (
+    AVAILABLE_MODELS,
+    ChatRequest,
+    ClarifyResumeRequest,
+    ResumeRequest,
+    StopRequest,
+)
+from app.services.chat_service import chat_service
 
 router = APIRouter()
 
@@ -25,10 +31,14 @@ async def list_models():
 
 
 @router.post("/stream")
-async def chat_stream(request: ChatRequest, req: Request, user: CurrentUser = Depends(get_current_user)):
+async def chat_stream(
+    request: ChatRequest, req: Request, user: CurrentUser = Depends(get_current_user)
+):
     await _check_owns_thread(request.thread_id, user)
     graph = req.app.state.graph
-    await conversation_client.touch_conversation(request.thread_id, request.model, request.subagent_model)
+    await conversation_client.touch_conversation(
+        request.thread_id, request.model, request.subagent_model
+    )
     return StreamingResponse(
         chat_service.stream(
             request.thread_id,
@@ -45,21 +55,32 @@ async def chat_stream(request: ChatRequest, req: Request, user: CurrentUser = De
 
 
 @router.post("/resume")
-async def chat_resume(request: ResumeRequest, req: Request, user: CurrentUser = Depends(get_current_user)):
+async def chat_resume(
+    request: ResumeRequest, req: Request, user: CurrentUser = Depends(get_current_user)
+):
     await _check_owns_thread(request.thread_id, user)
     graph = req.app.state.graph
-    await conversation_client.touch_conversation(request.thread_id, request.model, request.subagent_model)
+    await conversation_client.touch_conversation(
+        request.thread_id, request.model, request.subagent_model
+    )
     return StreamingResponse(
         chat_service.resume(
-            request.thread_id, request.decision, graph, user.sub,
-            request.model, request.subagent_model, request.web_search,
+            request.thread_id,
+            request.decision,
+            graph,
+            user.sub,
+            request.model,
+            request.subagent_model,
+            request.web_search,
         ),
         media_type="text/event-stream",
     )
 
 
 @router.get("/sandbox-file")
-async def chat_sandbox_file(thread_id: str, name: str, user: CurrentUser = Depends(get_current_user)):
+async def chat_sandbox_file(
+    thread_id: str, name: str, user: CurrentUser = Depends(get_current_user)
+):
     """Download a file the agent surfaced with `present_file` — proxied from
     the sandbox. Chat-scoped: it lives in the sandbox's ephemeral workspace,
     so a link stops working once that pod restarts."""
@@ -69,10 +90,10 @@ async def chat_sandbox_file(thread_id: str, name: str, user: CurrentUser = Depen
         raise HTTPException(status_code=400, detail="Invalid file name")
     try:
         content, mime, filename = await sandbox_manager.read_file(thread_id, name)
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail="File no longer available")
-    except httpx.HTTPError:
-        raise HTTPException(status_code=503, detail="Sandbox unavailable")
+    except SandboxRequestError as e:
+        if e.status_code is not None:
+            raise HTTPException(status_code=e.status_code, detail="File no longer available") from e
+        raise HTTPException(status_code=503, detail="Sandbox unavailable") from e
     return Response(
         content=content,
         media_type=mime,
@@ -81,21 +102,32 @@ async def chat_sandbox_file(thread_id: str, name: str, user: CurrentUser = Depen
 
 
 @router.post("/stop")
-async def chat_stop(request: StopRequest, req: Request, user: CurrentUser = Depends(get_current_user)):
+async def chat_stop(
+    request: StopRequest, req: Request, user: CurrentUser = Depends(get_current_user)
+):
     await _check_owns_thread(request.thread_id, user)
     stopped = await chat_service.stop(request.thread_id)
     return {"stopped": stopped}
 
 
 @router.post("/resume_clarify")
-async def chat_resume_clarify(request: ClarifyResumeRequest, req: Request, user: CurrentUser = Depends(get_current_user)):
+async def chat_resume_clarify(
+    request: ClarifyResumeRequest, req: Request, user: CurrentUser = Depends(get_current_user)
+):
     await _check_owns_thread(request.thread_id, user)
     graph = req.app.state.graph
-    await conversation_client.touch_conversation(request.thread_id, request.model, request.subagent_model)
+    await conversation_client.touch_conversation(
+        request.thread_id, request.model, request.subagent_model
+    )
     return StreamingResponse(
         chat_service.resume_clarify(
-            request.thread_id, request.answer, graph, user.sub,
-            request.model, request.subagent_model, request.web_search,
+            request.thread_id,
+            request.answer,
+            graph,
+            user.sub,
+            request.model,
+            request.subagent_model,
+            request.web_search,
         ),
         media_type="text/event-stream",
     )

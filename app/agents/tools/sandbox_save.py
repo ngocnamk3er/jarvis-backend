@@ -46,9 +46,10 @@ async def save_and_stub(
     thread_id: str, filename: str, content: str, *, kind: str, min_chars: int = 10_000
 ) -> str:
     """Return `content` unchanged if it's short enough to not matter. Above
-    `min_chars`, write it to `/workspace/<filename>` in the sandbox and
-    return a short stub instead. Degrades to returning `content` directly if
-    the sandbox write fails for any reason — never silently drops data.
+    `min_chars`, write it to `<filename>` (relative to the sandbox's working
+    directory) and return a short stub instead. Degrades to returning
+    `content` directly if the sandbox write fails for any reason — never
+    silently drops data.
     """
     n = len(content)
     if n <= min_chars:
@@ -77,7 +78,7 @@ async def save_and_stub(
     tail = content[-_PREVIEW_TAIL:].lstrip()
     omitted = n - _PREVIEW_HEAD - _PREVIEW_TAIL
     return (
-        f"[{kind} — {n:,} chars, saved to /workspace/{filename}]\n"
+        f"[{kind} — {n:,} chars, saved to {filename}]\n"
         f"--- head ---\n{head}\n"
         f"... [{omitted:,} chars omitted] ...\n"
         f"--- tail ---\n{tail}"

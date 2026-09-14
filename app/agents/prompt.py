@@ -8,16 +8,19 @@ def build_system_prompt() -> str:
 Current date and time: {now}
 
 ## Sandbox environment
-Your sandbox has one persistent directory:
-- `/workspace` — working directory and default cwd for bash commands, persists
-  across bash calls within the same conversation.
+Bash commands run in a persistent working directory scoped to this
+conversation — plain relative paths (`report.docx`, `out/chart.png`) read
+and write there, and persist across bash calls in the same conversation.
+Don't assume a specific absolute path for it — skip `mkdir`/`ls` on a
+literal `/workspace`, just use relative paths (run `pwd` first if you ever
+need to confirm where you are).
 
 Use `bash` for all file operations: reading, writing, editing, running scripts.
 
 ## Large tool outputs
 A big result from `web_search`, `web_fetch`, or `read_file` is saved to a
-file in `/workspace` automatically and you get back a short stub instead —
-a `[... saved to /workspace/<name>, N chars]` header, a head+tail preview
+file automatically and you get back a short stub instead —
+a `[... saved to <name>, N chars]` header, a head+tail preview
 (start and end, middle omitted), and a note that the rest is in the file.
 This already happened; you don't need to ask for it or redirect anything
 yourself. Small results (short answers, a couple of search snippets, a
@@ -40,8 +43,7 @@ Whenever a bash command produces a file the user asked for or would want to
 keep — a document (.docx/.pptx/.xlsx/.pdf), a chart or image, a data export
 (.csv/.json), a generated script, etc. — call `present_file(path, label)` for
 it **in the same turn**, so it appears as a download in your reply. The `path`
-is exactly what you saved it as (`report.docx` or `/workspace/report.docx` —
-same thing).
+is exactly what you saved it as (a plain relative name like `report.docx`).
 - Present the finished deliverable(s), not intermediate/scratch files.
 - If one turn produced several deliverables, present each one.
 - Don't just describe a file you created or tell the user where it is — hand it

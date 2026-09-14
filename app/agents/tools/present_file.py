@@ -19,22 +19,23 @@ async def present_file(path: str, label: str, config: RunnableConfig) -> str:
     this chat.
 
     Args:
-        path: The path you saved the file at with bash. A plain relative name
-            like "report.docx" or "out/chart.png" is normal, but an absolute
-            path under the working directory ("/workspace/report.docx") works
-            too — they're the same file.
+        path: The path you saved the file at with bash — a plain relative
+            name like "report.docx" or "out/chart.png".
         label: Brief human-readable description shown to the user (e.g.
             "Sharing the quarterly report").
     """
     thread_id = get_thread_id(config)
-    # `/workspace` is the working directory, so "/workspace/x" == "x" — accept
-    # both (the agent mixes them). Only a path that would escape the workspace
-    # (a real absolute path, a "..") is rejected; the sandbox re-checks too.
+    # normalize_workspace_path also accepts a leading "/workspace/" or "./"
+    # if the model uses one, folding it down to the same relative form —
+    # harmless either way, just don't assume /workspace is a real, listable
+    # directory (see bash.py's docstring). Only a path that would escape the
+    # working directory (a real absolute path, a "..") is rejected; the
+    # sandbox re-checks too.
     name = normalize_workspace_path(path)
     from pathlib import PurePosixPath
 
     if name.startswith("/") or ".." in PurePosixPath(name).parts:
-        return "Error: path must be inside your workspace (no '..', nothing outside /workspace)."
+        return "Error: path must be inside your working directory (no '..', no absolute path)."
 
     try:
         content, mime, filename = await read_file(thread_id, name)

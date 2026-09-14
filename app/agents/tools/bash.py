@@ -52,11 +52,13 @@ def _cap_output(output: str) -> str:
 async def bash(command: str, label: str, config: RunnableConfig) -> str:
     """Execute a bash command inside the sandbox and return stdout.
 
-    Each call starts in `/workspace`, a private directory for this
-    conversation — nothing else is in there and no other conversation can see
-    it. Files you write with a plain relative path (`report.docx`,
-    `out/chart.png`) or an absolute one under `/workspace` persist across bash
-    calls in this conversation. A fresh shell each call, so chain steps with
+    Each call runs in a private working directory for this conversation —
+    nothing else is in there and no other conversation can see it. Files you
+    write with a plain relative path (`report.docx`, `out/chart.png`) persist
+    across bash calls in this conversation. Don't assume a specific absolute
+    path for the working directory — skip `mkdir`/`ls` on a literal
+    `/workspace`, just use relative paths (run `pwd` first if you ever need
+    to confirm where you are). A fresh shell each call, so chain steps with
     `&&` or write a script and run it.
 
     Output over ~20,000 chars comes back as a head+tail preview, not the
@@ -73,8 +75,7 @@ async def bash(command: str, label: str, config: RunnableConfig) -> str:
     beautifulsoup4/lxml, python-docx, python-pptx, openpyxl, xlsxwriter,
     reportlab, fpdf2, pillow, jinja2, and pandoc for generating
     .docx/.pptx/.xlsx/.pdf files. After creating a file, pass its path to
-    `present_file` to hand it to the user — a relative name or the
-    `/workspace/...` form both work: `present_file("report.docx", ...)`.
+    `present_file` to hand it to the user: `present_file("report.docx", ...)`.
 
     Common uses:
         bash("ls -la")

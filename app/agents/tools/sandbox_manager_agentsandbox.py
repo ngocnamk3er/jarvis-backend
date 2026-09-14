@@ -18,23 +18,27 @@ migration doc).
 
 Design decisions, and why — each verified live, not just read off docs:
 
-- **`SandboxInClusterConnectionConfig`, not Tunnel or a hand-rolled router
-  call.** Tunnel mode shells out to `kubectl port-forward` per sandbox —
-  fine for a laptop, wrong for a long-running backend service (extra
-  process per sandbox, needs `kubectl` + a kubeconfig baked into the
-  image). Hand-rolling direct HTTP calls to sandbox-router with
-  `X-Sandbox-ID`/`X-Sandbox-Namespace` headers (the obvious-looking
-  alternative) was tried and verified NOT to work for a sandbox that was
-  never claimed through the SDK: the router could route to a sandbox
-  claimed via `create_sandbox()` (proxied straight to its pod IP) but
-  returned 502 for the exact same pod addressed by name directly — it
-  tried `<name>.<namespace>.svc.cluster.local`, which doesn't resolve
-  (agent-sandbox doesn't create a per-Sandbox Service). Conclusion: the
-  router's routing table is populated by the *claim* lifecycle, not by a
-  Sandbox merely existing — so claiming has to go through the real client,
-  which then makes `SandboxInClusterConnectionConfig` (client resolves the
-  pod IP itself, from the Sandbox's own status, bypassing the router
-  entirely) the natural production-grade choice, not a hack.
+- **`SandboxInClusterConnectionConfig`, not the router.** Tried routing
+  through `sandbox-router-svc` instead (`SandboxDirectConnectionConfig`) —
+  reasonable-looking on paper, since every sandbox this module touches
+  *is* claimed through `create_sandbox()`, not addressed by a guessed
+  name. Verified live anyway, from a real jarvis-backend pod, with a
+  genuinely SDK-claimed sandbox and the exact headers the SDK sends
+  (`X-Sandbox-ID`/`-Namespace`/`-Port`) — still 502'd:
+  `{"detail":"Could not connect to the backend sandbox: <pod>"}`. Root
+  cause, found by reading the *actual running* router's logs, not just
+  its source: the deployed image (`sandbox-router:latest-main`, a
+  perpetually-rebuilt staging tag — see AGENTSANDBOX-MIGRATION.md's
+  Gotchas) turned out to be an old Python build that falls straight to
+  `<id>.<namespace>.svc.cluster.local` DNS — the exact broken form noted
+  below — with no informer-backed pod-IP cache at all. The *source* at
+  tag `v1.0.2` (matching the installed controller) is a Go rewrite that
+  does have that cache and would very likely make router-mode work — but
+  that image isn't what's deployed, and hasn't been rebuilt+pushed yet
+  (see AGENTSANDBOX-MIGRATION.md's router-image gotcha). Revisit router
+  mode once that's actually running; until then `SandboxInClusterConnectionConfig`
+  (client resolves the pod IP itself from the Sandbox's own status,
+  bypassing the router entirely) is the one confirmed to work.
 
 - **A Kubernetes label carries the `thread_id -> claim_name` mapping,
   not a database.** `create_sandbox()` always generates its own random

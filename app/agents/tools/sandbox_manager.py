@@ -1,14 +1,13 @@
 """Client for kubernetes-sigs/agent-sandbox — talks to agent-sandbox's
 controller (CRDs `SandboxClaim`/`Sandbox` in `settings.AGENTSANDBOX_NAMESPACE`)
-to give each conversation its own sandbox pod, built from jarvis-sandbox's
-own toolchain image via `Dockerfile.agentsandbox` (see jarvis-sandbox repo's
-AGENTSANDBOX-MIGRATION.md for the full history — Phase 1 install, Phase 2
-build-out, and the 2026-09-14 cutover from jarvis-sandbox's own
-orchestrator, which this replaced and which no longer runs anywhere).
+to give each conversation its own sandbox pod, running agent-sandbox's own
+stock `python-runtime-sandbox` image. See SANDBOX-SETUP.md in this repo for
+the full deployment.
 
 Written against `k8s-agent-sandbox`'s *actual* installed behavior, verified
 live against a real cluster while building this — not the docs site, which
-is stale/inconsistent in several places (see the migration doc).
+is stale/inconsistent in several places (its getting-started guide never
+mentions the SandboxWarmPool that `create_sandbox()` requires, for one).
 
 Design decisions, and why — each verified live, not just read off docs:
 
@@ -23,7 +22,7 @@ Design decisions, and why — each verified live, not just read off docs:
   NetworkPolicy is not enforced on this cluster, so routing through the
   router is what is left. Note this does **not** close that pod-to-pod
   path (nothing in the router can — that traffic never reaches it); it is
-  a known, accepted gap. See jarvis-sandbox/AGENTSANDBOX-MIGRATION.md.
+  a known, accepted gap. See SANDBOX-SETUP.md's "Known limitation".
 
 - **The router runs agent-sandbox's own published image, not a self-built
   one.** An earlier pass here built the Go router from the `v1.0.2` source
@@ -68,7 +67,7 @@ Design decisions, and why — each verified live, not just read off docs:
   `bash.py` doesn't need to special-case this module.
 
 `read_file()` doesn't catch anything itself — a 404 (missing file) or 400
-(path is a directory) from `agentsandbox_server.py`'s `/download/<path>`
+(path is a directory) from the sandbox runtime's `/download/<path>`
 surfaces as `k8s_agent_sandbox.exceptions.SandboxRequestError` (the SDK
 wraps every non-2xx response in this, `.status_code` set from the real
 HTTP status — confirmed by reading `async_connector.py`'s `send_request()`
@@ -123,14 +122,14 @@ def get_thread_id(config) -> str:
 
 
 def normalize_workspace_path(path: str) -> str:
-    """Fold the ways the agent refers to a file in its workspace down to one
-    relative name.
+    """Fold the ways the agent refers to a file down to one relative name.
 
-    `/workspace` is the working directory, so the model freely writes
-    `report.docx`, `./report.docx` and `/workspace/report.docx` for the same
-    file (the bash tool tells it absolute-under-/workspace is fine). Strip the
-    workspace prefix / leading `./`; leave anything that would escape (a real
-    absolute path, a `..`) for the caller's guard to reject.
+    The model freely writes `report.docx`, `./report.docx` and
+    `/workspace/report.docx` for the same file. `/workspace` is not a real
+    path on the stock runtime (its working directory is the image's own), but
+    the prefix still shows up in model output, so strip it along with a
+    leading `./`; leave anything that would escape (a real absolute path, a
+    `..`) for the caller's guard to reject.
     """
     name = path.strip()
     for prefix in ("/workspace/", "./"):
@@ -176,9 +175,8 @@ async def exec_bash(thread_id: str, command: str) -> dict:
     # shlex.split just tokenizes on whitespace/quotes with zero shell
     # semantics). Wrapping as `bash -c '<command>'` makes that same
     # shlex.split produce exactly ['bash', '-c', '<command>'], so bash itself
-    # parses the shell syntax. Harmless on jarvis's own agentsandbox_server.py,
-    # which already runs `bash -c <command>` server-side — this just adds one
-    # extra (nested) bash -c layer there, not a behavior change.
+    # parses the shell syntax. Harmless against a runtime that already uses a
+    # shell — it just adds one nested `bash -c` layer, not a behavior change.
     wrapped = "bash -c " + shlex.quote(command)
     try:
         result = await sandbox.commands.run(wrapped, timeout=300)
@@ -200,9 +198,8 @@ async def exec_bash(thread_id: str, command: str) -> dict:
 async def read_file(thread_id: str, name: str) -> tuple[bytes, str, str]:
     """Returns (bytes, mime_type, filename).
 
-    Mime type isn't reported by agentsandbox_server.py's /download response
-    headers the way the old orchestrator's did — falls back to guessing from
-    the extension client-side. Fine for present_file's current use (it
+    The runtime's /download response doesn't report a mime type — falls back
+    to guessing from the extension client-side. Fine for present_file's current use (it
     already has the filename from the tool call), worth revisiting if that
     changes.
     """

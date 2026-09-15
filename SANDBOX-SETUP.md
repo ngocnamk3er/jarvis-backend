@@ -415,5 +415,3 @@ only option that makes the router aware of *which* sandbox a caller may
 touch — it needs a component to mint per-sandbox tokens at creation time,
 and a self-built router image.
 
-Background and the full incident write-up:
-`jarvis-sandbox/AGENTSANDBOX-MIGRATION.md` step G.

@@ -38,11 +38,11 @@ class Settings(BaseSettings):
 
     # kubernetes-sigs/agent-sandbox — backs the bash tool + present_file, one
     # dedicated sandbox pod per conversation. See sandbox_manager.py and
-    # jarvis-sandbox's AGENTSANDBOX-MIGRATION.md. Replaced jarvis-sandbox's
-    # own orchestrator (cutover 2026-09-14), which itself replaced OpenSandbox
-    # (its bwrap/userns isolation broke on this host).
+    # SANDBOX-SETUP.md. The warm pool name must match a SandboxWarmPool that
+    # exists in AGENTSANDBOX_NAMESPACE; `python-sandbox-pool` is the one
+    # upstream's own quickstart YAML creates.
     AGENTSANDBOX_NAMESPACE: str = "default"
-    AGENTSANDBOX_WARMPOOL: str = "jarvis-agentsandbox-pool"
+    AGENTSANDBOX_WARMPOOL: str = "python-sandbox-pool"
 
     class Config:
         env_file = ".env"

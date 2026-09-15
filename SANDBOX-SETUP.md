@@ -38,140 +38,54 @@ Expect four CRDs: `sandboxes.agents.x-k8s.io` (core), and
 Note the split — `sandboxes` is **not** under `extensions.*`; easy to get
 wrong when writing RBAC later (step 4 got this wrong once).
 
-## 2. Build and deploy the router, with auth on
+## 2. Deploy the router
 
-The router is what actually proxies client requests to the right Sandbox
-pod, and it's also where **all** of agent-sandbox's authorization lives —
-individual sandbox pods have no auth of their own, by design, so this step
-is not optional for anything beyond a throwaway local test. Build it from
-source instead of using `kubectl apply` on upstream's own
-`sandbox_router.yaml` quickstart — that YAML defaults to
-`--authz-mode=allow-all` (anyone can call any sandbox), which is fine for a
-five-minute smoke test and not fine for anything real.
-
-**Build** (context must be the repo root — the router's Dockerfile imports
-shared Go packages from outside `sandbox-router/`):
+The router proxies each exec/file call to the right Sandbox pod. Use
+agent-sandbox's own published image and their quickstart config — there is
+nothing to build:
 
 ```bash
-git clone --branch v1.0.2 --depth 1 https://github.com/kubernetes-sigs/agent-sandbox.git
-cd agent-sandbox
-docker build -f sandbox-router/Dockerfile --build-arg GIT_VERSION=v1.0.2 \
-  -t sandbox-router-go:local .
-```
+VERSION=v1.0.2
 
-**Get the image into the cluster** (minikube path — swap for a real
-`docker push` if your registry doesn't have the local `access forbidden`
-bug this one does):
-
-```bash
-docker tag sandbox-router-go:local \
-  host.minikube.internal:5050/root/jarvis-sandbox:sandbox-router-v1.0.2
-minikube image load host.minikube.internal:5050/root/jarvis-sandbox:sandbox-router-v1.0.2
-```
-
-**RBAC** — the router needs to read Pods (to resolve a Sandbox to its pod
-IP) and to call the TokenReview API (to validate the bearer tokens clients
-send it):
-
-```bash
-kubectl apply -f - <<'EOF'
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: sandbox-router
-  namespace: agent-sandbox-system
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: sandbox-router
-rules:
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get", "list", "watch"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: sandbox-router
-roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: sandbox-router}
-subjects:
-- {kind: ServiceAccount, name: sandbox-router, namespace: agent-sandbox-system}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: sandbox-router-auth-delegator
-roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: system:auth-delegator}
-subjects:
-- {kind: ServiceAccount, name: sandbox-router, namespace: agent-sandbox-system}
-EOF
-```
-
-**Deployment + Service** — `--authz-mode=tokenreview` is the whole point;
-`--cache-enabled=true` is a pod-IP cache that also fixes 502s on a
-freshly-claimed sandbox:
-
-```bash
-kubectl apply -f - <<'EOF'
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: sandbox-router-deployment
-  namespace: agent-sandbox-system
-  labels: {app: sandbox-router}
-spec:
-  replicas: 2
-  selector: {matchLabels: {app: sandbox-router}}
-  template:
-    metadata: {labels: {app: sandbox-router}}
-    spec:
-      serviceAccountName: sandbox-router
-      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
-      containers:
-      - name: sandbox-router
-        image: host.minikube.internal:5050/root/jarvis-sandbox:sandbox-router-v1.0.2
-        imagePullPolicy: IfNotPresent
-        args:
-        - --http-bind-address=:8080
-        - --metrics-bind-address=:9090
-        - --health-probe-bind-address=:8081
-        - --cluster-domain=cluster.local
-        - --proxy-timeout=180s
-        - --upstream-max-retries=3
-        - --cache-enabled=true
-        - --authz-mode=tokenreview
-        - --authz-tokenreview-require-token=true
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          runAsNonRoot: true
-          capabilities: {drop: ["ALL"]}
-        ports:
-        - {name: http, containerPort: 8080}
-        - {name: metrics, containerPort: 9090}
-        - {name: healthz, containerPort: 8081}
-        livenessProbe: {httpGet: {path: /healthz, port: healthz}, initialDelaySeconds: 5, periodSeconds: 10}
-        readinessProbe: {httpGet: {path: /readyz, port: healthz}, initialDelaySeconds: 1, periodSeconds: 5}
-        resources:
-          requests: {cpu: 100m, memory: 128Mi}
-          limits: {cpu: "1", memory: 512Mi}
-      terminationGracePeriodSeconds: 45
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: sandbox-router-svc
-  namespace: agent-sandbox-system
-spec:
-  type: ClusterIP
-  selector: {app: sandbox-router}
-  ports:
-  - {name: http, port: 8080, targetPort: 8080}
-EOF
+curl -sSL https://raw.githubusercontent.com/kubernetes-sigs/agent-sandbox/refs/tags/${VERSION}/clients/python/agentic-sandbox-client/sandbox-router/sandbox_router.yaml \
+  | sed 's|${ROUTER_IMAGE}|us-central1-docker.pkg.dev/k8s-staging-images/agent-sandbox/sandbox-router:latest-main|g' \
+  | sed '/ALLOW_UNAUTHENTICATED_ROUTER/{n;s/value: "false"/value: "true"/}' \
+  | kubectl -n agent-sandbox-system apply -f -
 
 kubectl -n agent-sandbox-system rollout status deployment/sandbox-router-deployment --timeout=90s
 ```
+
+That creates both the `sandbox-router-deployment` and the
+`sandbox-router-svc` Service the client talks to. **No ServiceAccount, no
+RBAC** — the router never calls the Kubernetes API. It doesn't need to:
+the SDK resolves the pod IP itself from the Sandbox CR's
+`.status.podIPs` and passes it along as `X-Sandbox-Pod-IP`, so the router
+only has to forward. (That is also why step 4 grants jarvis-backend
+`sandboxes: get` — it is what makes routing work, not just a status check.)
+
+### The auth flag
+
+The second `sed` is the one worth understanding. Upstream's file ships
+`ALLOW_UNAUTHENTICATED_ROUTER: "false"`; the quickstart flips it to
+`"true"` so you don't have to provision a Secret. Both work — tested:
+
+| Setting | Behavior |
+|---|---|
+| `"true"` | No credential required. Anything that can reach the Service can address any sandbox. |
+| `"false"` | Requires `ROUTER_AUTH_TOKEN` (a single shared token, wired from a Secret — the env block is commented out in upstream's YAML). Callers without it get `401`. Clients send it as `Authorization: Bearer <token>`. |
+
+**Per-conversation isolation does not depend on this flag.** Each
+conversation gets its own pod either way — verified with two conversations
+where B could neither list nor read A's files. What `"false"` buys is
+rejecting callers that present no token at all. This setup runs `"true"`,
+since only jarvis-backend calls the router; if you want `"false"`, create
+the Secret, uncomment the `ROUTER_AUTH_TOKEN` env block, and have
+`sandbox_manager.py` send that token (see step 5 — the header-injection
+seam is already there in `_get_or_create_sandbox()`).
+
+> If the router is managed by GitOps (ArgoCD with `selfHeal`), don't run
+> the `kubectl apply` above — it will be reverted on the next sync. Put the
+> YAML's *content* into the tracked manifest instead.
 
 ## 3. Create the SandboxTemplate + SandboxWarmPool (default image)
 
@@ -228,11 +142,11 @@ kubectl get pods -n default -w   # wait for python-sandbox-pool-xxx to hit 1/1 R
 
 ## 4. jarvis-backend side — RBAC + ServiceAccount
 
-jarvis-backend needs two things from the k8s API: permission to
-create/list/delete `SandboxClaim`s and read `Sandbox`es, and — separately —
-a token the router will accept (step 2's `--authz-tokenreview-require-token`).
-Both are covered by the same ServiceAccount; no extra secret needed, its
-normal projected token doubles as the router's bearer credential.
+jarvis-backend needs permission to create/list/delete `SandboxClaim`s and
+to read `Sandbox`es. The `sandboxes` grant does double duty and is easy to
+mistake for dead weight: besides readiness checks, it is where the SDK
+reads `.status.podIPs` to tell the router which pod to forward to. Drop it
+and routing breaks, not just status reporting.
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -292,11 +206,9 @@ AGENTSANDBOX_WARMPOOL: str = "python-sandbox-pool"
 ```
 
 `app/agents/tools/sandbox_manager.py` — the whole client. Connects
-**through the router**, not straight to a pod IP (the pod itself checks
-nothing; going pod-direct skips step 2's auth entirely — confirmed live
-that it lets one conversation's sandbox fully read/exec another's). Sends
-the ServiceAccount's own projected token as the bearer credential on every
-call, read fresh each time since kubelet rotates it (~1h default):
+**through the router**, not straight to a pod IP: the pod itself checks
+nothing, so pod-direct traffic is unauthenticated by anyone — confirmed
+live that it lets one sandbox fully read and exec another's.
 
 ```python
 import re
@@ -312,16 +224,6 @@ _client: AsyncSandboxClient | None = None
 _THREAD_LABEL = "jarvis-thread"
 _CLAIM_READY_TIMEOUT = 180
 _ROUTER_URL = "http://sandbox-router-svc.agent-sandbox-system.svc.cluster.local:8080"
-_SA_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-
-
-def _auth_headers() -> dict[str, str]:
-    try:
-        with open(_SA_TOKEN_PATH) as f:
-            token = f.read().strip()
-    except OSError:
-        return {}
-    return {"Authorization": f"Bearer {token}"}
 
 
 def init_client() -> None:
@@ -353,9 +255,10 @@ async def _get_or_create_sandbox(thread_id: str):
             sandbox_ready_timeout=_CLAIM_READY_TIMEOUT,
             labels={_THREAD_LABEL: label},
         )
-    # SandboxDirectConnectionConfig has no headers/auth field — reach into
-    # the shared httpx.AsyncClient the connector actually uses instead.
-    sandbox.connector.client.headers.update(_auth_headers())
+    # If the router runs with ALLOW_UNAUTHENTICATED_ROUTER="false", inject the
+    # shared token here — SandboxDirectConnectionConfig has no headers field,
+    # so reach into the httpx.AsyncClient the connector actually uses:
+    #   sandbox.connector.client.headers.update({"Authorization": f"Bearer {token}"})
     return sandbox
 
 
@@ -425,25 +328,32 @@ asyncio.run(main())
 "
 ```
 
-Expect `ok` then `42`, no traceback. Also worth confirming the router's
-auth is actually doing something — an unauthenticated call should be
-rejected:
+Expect `ok` then `42`, no traceback.
 
-```bash
-kubectl run curl-test --rm -it --image=curlimages/curl --restart=Never -- \
-  curl -s -o /dev/null -w "%{http_code}\n" \
-  http://sandbox-router-svc.agent-sandbox-system.svc.cluster.local:8080/
-```
-
-Expect `401`.
+To confirm the isolation itself rather than just that a command runs, use
+two different `thread_id`s: write a file from one, then `ls` from the
+other. The second must not see it, and the two must report different
+`hostname`s.
 
 ## Known limitation, accepted as-is
 
-The router authenticates jarvis-backend's own calls, but it does nothing
-to stop one sandbox pod from reaching another sandbox pod's IP directly —
-that traffic never touches the router. NetworkPolicy would close this but
-isn't enforced on this cluster's CNI. Confirmed exploitable, confirmed that
-ordinary per-conversation usage never triggers it (it requires code
-*inside* a sandbox deliberately calling out to another pod's IP). Left
-open for now — see `jarvis-sandbox/AGENTSANDBOX-MIGRATION.md` step G for
-the full writeup if this needs revisiting.
+Nothing stops one sandbox pod from reaching another sandbox pod's IP
+directly — that traffic never touches the router, so no router setting
+affects it. NetworkPolicy would close it but isn't enforced on this
+cluster's CNI.
+
+This is confirmed exploitable and knowingly left open. Two things keep it
+narrow: it requires code *inside* a sandbox deliberately calling out to
+another pod's IP (an injected payload, say — not anything ordinary tool
+use does), and the attacker still has to find the target pod's IP.
+Per-conversation isolation on the normal FE → BE → sandbox path is intact
+and verified.
+
+Note that running the router with `ALLOW_UNAUTHENTICATED_ROUTER="false"`
+would *not* close this either, nor would the Go router's
+`--authz-mode=tokenreview` — the latter only authenticates that a caller
+is some valid cluster principal, and every conversation here shares one
+ServiceAccount, so it never distinguished between them. The mode that
+actually binds a credential to a single sandbox is `scoped-token`, which
+needs something to mint per-sandbox tokens at creation time. See
+`jarvis-sandbox/AGENTSANDBOX-MIGRATION.md` step G.

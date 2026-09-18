@@ -235,6 +235,12 @@ spec:
 k8s-agent-sandbox[async]==1.0.2
 ```
 
+Pin the version. This SDK moves faster than its documentation — upstream's
+own getting-started guide never mentions the `SandboxWarmPool` that
+`create_sandbox()` requires as a positional argument, so an unpinned bump
+can change behaviour under code that was written against docs which were
+already behind. `[async]` is only needed for `AsyncSandboxClient`.
+
 `app/core/config.py`:
 
 ```python
@@ -264,7 +270,8 @@ _ROUTER_URL = "http://sandbox-router-svc.agent-sandbox-system.svc.cluster.local:
 
 def init_client() -> None:
     global _client
-    # Through the router, never pod-direct — see "How it works".
+    # connection_config is NOT optional in practice — see below. Through the
+    # router, never pod-direct, per "How it works".
     _client = AsyncSandboxClient(
         connection_config=SandboxDirectConnectionConfig(api_url=_ROUTER_URL, server_port=8888),
     )
@@ -330,7 +337,43 @@ async def reset(thread_id: str) -> None:
         await _client.delete_sandbox(claim_name, namespace)
 ```
 
-Two things that bite when adding a call site:
+### Always pass `connection_config`
+
+Omitting it is the single easiest way to break an in-cluster client, and the
+failure names nothing relevant:
+
+```
+File ".../k8s_agent_sandbox/connector.py", line 192, in connect
+    self.port_forward_process = subprocess.Popen(
+FileNotFoundError: [Errno 2] No such file or directory: 'kubectl'
+```
+
+The default is `SandboxLocalTunnelConnectionConfig`:
+
+```python
+self.connection_config = connection_config or SandboxLocalTunnelConnectionConfig()
+```
+
+That strategy shells out to `kubectl port-forward` to reach the router — the
+right choice from a laptop *outside* the cluster, wrong from inside a pod,
+where `kubectl` isn't installed and isn't wanted. Nothing warns you; you get
+a missing-binary error that reads like a packaging problem.
+
+The five options:
+
+| Config | Use when |
+|---|---|
+| `SandboxLocalTunnelConnectionConfig` | **The default.** Outside the cluster; requires `kubectl` on PATH |
+| `SandboxDirectConnectionConfig` | In-cluster, through the router — **what this deployment uses** |
+| `SandboxInClusterConnectionConfig` | In-cluster, straight to the pod IP, bypassing the router |
+| `SandboxGatewayConnectionConfig` | Behind a Gateway API route |
+| `SandboxdPodTunnelConnectionConfig` | Tunnelling via sandboxd |
+
+Note this is separate from the `[async]` extra. That only pulls the
+dependencies `AsyncSandboxClient` needs; the synchronous `SandboxClient`
+hits the same default and the same error without it.
+
+### Two more things that bite when adding a call site
 
 - **Catch `SandboxRequestError`, not `httpx.HTTPError`.** The SDK uses
   `httpx` internally but wraps every non-2xx into its own exception, with

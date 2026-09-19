@@ -81,14 +81,18 @@ live; the *directory* (400) case still hasn't been exercised through this
 path.
 """
 
+import logging
 import re
 import shlex
+from datetime import datetime, timedelta, timezone
 
 from k8s_agent_sandbox import AsyncSandboxClient
 from k8s_agent_sandbox.exceptions import SandboxRequestError
 from k8s_agent_sandbox.models import SandboxDirectConnectionConfig
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 _client: AsyncSandboxClient | None = None
 
@@ -97,11 +101,25 @@ _CLAIM_READY_TIMEOUT = 180  # generous first-claim cold start; adopting a warm p
 # In-cluster DNS for the agent-sandbox-system sandbox-router Service.
 _ROUTER_URL = "http://sandbox-router-svc.agent-sandbox-system.svc.cluster.local:8080"
 
+# The Sandbox CRD, for the expiry patch below — the SDK's helper can get and
+# delete these but not update them.
+_SANDBOX_API = {"group": "agents.x-k8s.io", "version": "v1beta1", "plural": "sandboxes"}
+
 
 def init_client() -> None:
     global _client
     _client = AsyncSandboxClient(
         connection_config=SandboxDirectConnectionConfig(api_url=_ROUTER_URL, server_port=8888),
+        # The SDK defaults this to True, registering an atexit hook that
+        # deletes every sandbox the process is tracking. That made sense while
+        # nothing else reclaimed them, but now the expiry set in
+        # _touch_expiry() does — from the cluster, so it also covers sandboxes
+        # a previous process created and this one has never heard of. Leaving
+        # the hook on would turn every backend restart, including a routine
+        # rollout, into data loss for every conversation currently in flight:
+        # deleting the claim deletes the Sandbox and its volume, where letting
+        # it expire would only have paused it.
+        cleanup=False,
     )
 
 
@@ -147,30 +165,80 @@ def _label_value(thread_id: str) -> str:
     return safe.strip("-_.") or "unknown"
 
 
+async def _touch_expiry(claim_name: str, namespace: str) -> None:
+    """Push a claim's sandbox expiry out to now + TTL, reviving it if lapsed.
+
+    Called before every use, which is what turns a fixed deadline into an idle
+    timeout — the clock only runs while the conversation is quiet.
+
+    On expiry the controller deletes the Pod but, under `Retain`, keeps the
+    Sandbox and its volume, so extending the deadline brings the same
+    filesystem back (~6s) instead of a blank one. Hence patching the Sandbox
+    rather than using the claim's own `lifecycle`: the SDK's
+    `shutdown_after_seconds` hardcodes `shutdownPolicy: Delete`, which takes
+    the volume with it.
+
+    This has to run *before* `get_sandbox()`, not after: the SDK treats
+    `SandboxExpired` as terminal and raises `SandboxNotFoundError` rather than
+    handing back an object to revive. The Sandbox's name is read from the
+    claim's `status.sandbox.name`, which survives expiry.
+
+    Best-effort — a sandbox that can't be re-armed keeps its old deadline,
+    which beats refusing to run the user's command.
+    """
+    helper = _get_client().k8s_helper
+    try:
+        claim = await helper.get_sandbox_claim(claim_name, namespace)
+        status = (claim or {}).get("status") or {}
+        name = (status.get("sandbox") or {}).get("name")
+        if not name:
+            return  # not bound to a sandbox yet; creation will set the deadline
+        deadline = datetime.now(timezone.utc) + timedelta(
+            seconds=settings.AGENTSANDBOX_TTL_SECONDS
+        )
+        await helper.custom_objects_api.patch_namespaced_custom_object(
+            namespace=namespace,
+            name=name,
+            body={
+                "spec": {
+                    "shutdownTime": deadline.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "shutdownPolicy": "Retain",
+                }
+            },
+            # Required: the client offers json-patch and merge-patch and picks
+            # the first, so this dict would be rejected as a malformed JSON
+            # Patch operation list.
+            _content_type="application/merge-patch+json",
+            **_SANDBOX_API,
+        )
+        expired = any(
+            c.get("type") == "Ready" and c.get("reason") == "SandboxExpired"
+            for c in status.get("conditions") or []
+        )
+        if expired:
+            await helper.wait_for_sandbox_ready(name, namespace, _CLAIM_READY_TIMEOUT)
+    except Exception:
+        logger.warning("could not extend expiry for claim %s", claim_name, exc_info=True)
+
+
 async def _get_or_create_sandbox(thread_id: str):
     client = _get_client()
     namespace = settings.AGENTSANDBOX_NAMESPACE
     label = _label_value(thread_id)
     existing = await client.list_all_sandboxes(namespace, label_selector=f"{_THREAD_LABEL}={label}")
     if existing:
-        sandbox = await client.get_sandbox(existing[0], namespace)
-    else:
-        sandbox = await client.create_sandbox(
-            warmpool=settings.AGENTSANDBOX_WARMPOOL,
-            namespace=namespace,
-            sandbox_ready_timeout=_CLAIM_READY_TIMEOUT,
-            labels={_THREAD_LABEL: label},
-            # Without this a sandbox outlives its conversation indefinitely.
-            # reset() only fires when the user stops a run or deletes the
-            # conversation, and the SDK's atexit hook only reaches sandboxes
-            # the *current* process still tracks in memory — so anything
-            # created before a backend restart is orphaned for good. This sets
-            # spec.lifecycle on the claim (shutdownTime = now + TTL,
-            # shutdownPolicy = Delete), which the controller enforces on its
-            # own. Claims from a closed tab now expire instead of pinning a
-            # pod and its 1Gi volume forever.
-            shutdown_after_seconds=settings.AGENTSANDBOX_TTL_SECONDS,
-        )
+        await _touch_expiry(existing[0], namespace)
+        return await client.get_sandbox(existing[0], namespace)
+
+    sandbox = await client.create_sandbox(
+        warmpool=settings.AGENTSANDBOX_WARMPOOL,
+        namespace=namespace,
+        sandbox_ready_timeout=_CLAIM_READY_TIMEOUT,
+        labels={_THREAD_LABEL: label},
+    )
+    # claim_name, not sandbox_id — the latter names the Sandbox, which is a
+    # different object and would silently find no claim here.
+    await _touch_expiry(sandbox.claim_name, namespace)
     return sandbox
 
 

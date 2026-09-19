@@ -160,6 +160,16 @@ async def _get_or_create_sandbox(thread_id: str):
             namespace=namespace,
             sandbox_ready_timeout=_CLAIM_READY_TIMEOUT,
             labels={_THREAD_LABEL: label},
+            # Without this a sandbox outlives its conversation indefinitely.
+            # reset() only fires when the user stops a run or deletes the
+            # conversation, and the SDK's atexit hook only reaches sandboxes
+            # the *current* process still tracks in memory — so anything
+            # created before a backend restart is orphaned for good. This sets
+            # spec.lifecycle on the claim (shutdownTime = now + TTL,
+            # shutdownPolicy = Delete), which the controller enforces on its
+            # own. Claims from a closed tab now expire instead of pinning a
+            # pod and its 1Gi volume forever.
+            shutdown_after_seconds=settings.AGENTSANDBOX_TTL_SECONDS,
         )
     return sandbox
 

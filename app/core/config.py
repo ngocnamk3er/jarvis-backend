@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     # upstream's own quickstart YAML creates.
     AGENTSANDBOX_NAMESPACE: str = "default"
     AGENTSANDBOX_WARMPOOL: str = "python-sandbox-pool"
+    # Hard deadline on a sandbox, enforced by the cluster rather than by this
+    # process — the only reclaim that survives a backend restart. Note it is a
+    # deadline, not an idle timeout: the clock starts when the sandbox is
+    # created and does not reset on use, so a session still running at the
+    # limit loses its sandbox mid-flight. 3h matches what the previous
+    # orchestrator capped at; raise it if that ever bites a real conversation.
+    AGENTSANDBOX_TTL_SECONDS: int = 10_800
 
     class Config:
         env_file = ".env"

@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     # filesystem in a few seconds — this is a pause, not a teardown, and the
     # value is a CPU/memory-reclaim knob, not a data-retention one.
     AGENTSANDBOX_TTL_SECONDS: int = 1_800
+    # The second tier, and the only thing that ever reclaims disk. Expiry
+    # above frees the pod but keeps the volume, so a conversation nobody ever
+    # deletes would hold its 1Gi forever. This deadline is set on the *claim*,
+    # where expiry cascades down and removes the volume too. Also pushed
+    # forward on every use, so it measures abandonment rather than age.
+    AGENTSANDBOX_MAX_IDLE_SECONDS: int = 604_800  # 7 days
 
     class Config:
         env_file = ".env"

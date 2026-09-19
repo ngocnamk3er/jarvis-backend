@@ -101,9 +101,17 @@ _CLAIM_READY_TIMEOUT = 180  # generous first-claim cold start; adopting a warm p
 # In-cluster DNS for the agent-sandbox-system sandbox-router Service.
 _ROUTER_URL = "http://sandbox-router-svc.agent-sandbox-system.svc.cluster.local:8080"
 
-# The Sandbox CRD, for the expiry patch below — the SDK's helper can get and
+# The two CRDs the expiry patches below target — the SDK's helper can get and
 # delete these but not update them.
 _SANDBOX_API = {"group": "agents.x-k8s.io", "version": "v1beta1", "plural": "sandboxes"}
+_CLAIM_API = {
+    "group": "extensions.agents.x-k8s.io",
+    "version": "v1beta1",
+    "plural": "sandboxclaims",
+}
+# The client offers json-patch and merge-patch and picks the first, so a plain
+# dict body is rejected as a malformed JSON Patch operation list without this.
+_MERGE_PATCH = "application/merge-patch+json"
 
 
 def init_client() -> None:
@@ -171,12 +179,20 @@ async def _touch_expiry(claim_name: str, namespace: str) -> None:
     Called before every use, which is what turns a fixed deadline into an idle
     timeout — the clock only runs while the conversation is quiet.
 
-    On expiry the controller deletes the Pod but, under `Retain`, keeps the
-    Sandbox and its volume, so extending the deadline brings the same
-    filesystem back (~6s) instead of a blank one. Hence patching the Sandbox
-    rather than using the claim's own `lifecycle`: the SDK's
-    `shutdown_after_seconds` hardcodes `shutdownPolicy: Delete`, which takes
-    the volume with it.
+    Two deadlines get pushed, on two different objects, because `Retain` means
+    something different at each level and only one of them spares the volume:
+
+    - On the **Sandbox** (short): expiry deletes the Pod but `Retain` keeps the
+      Sandbox and its volume, so extending it later brings the same filesystem
+      back in a couple of seconds. A pause.
+    - On the **claim** (long): expiry with `Delete` cascades — claim, Sandbox,
+      volume. The only thing that ever reclaims disk, since the pause above
+      never does.
+
+    Note `Retain` on the *claim* would not do the same favour: it keeps the
+    claim object but still deletes the Sandbox beneath it, taking the volume.
+    That asymmetry is also why the SDK's `shutdown_after_seconds` is no use
+    here — it writes claim-level lifecycle with `Delete`.
 
     This has to run *before* `get_sandbox()`, not after: the SDK treats
     `SandboxExpired` as terminal and raises `SandboxNotFoundError` rather than
@@ -187,29 +203,43 @@ async def _touch_expiry(claim_name: str, namespace: str) -> None:
     which beats refusing to run the user's command.
     """
     helper = _get_client().k8s_helper
+    now = datetime.now(timezone.utc)
+
+    def _at(seconds: int) -> str:
+        return (now + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     try:
         claim = await helper.get_sandbox_claim(claim_name, namespace)
         status = (claim or {}).get("status") or {}
         name = (status.get("sandbox") or {}).get("name")
         if not name:
             return  # not bound to a sandbox yet; creation will set the deadline
-        deadline = datetime.now(timezone.utc) + timedelta(
-            seconds=settings.AGENTSANDBOX_TTL_SECONDS
-        )
+
         await helper.custom_objects_api.patch_namespaced_custom_object(
             namespace=namespace,
             name=name,
             body={
                 "spec": {
-                    "shutdownTime": deadline.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "shutdownTime": _at(settings.AGENTSANDBOX_TTL_SECONDS),
                     "shutdownPolicy": "Retain",
                 }
             },
-            # Required: the client offers json-patch and merge-patch and picks
-            # the first, so this dict would be rejected as a malformed JSON
-            # Patch operation list.
-            _content_type="application/merge-patch+json",
+            _content_type=_MERGE_PATCH,
             **_SANDBOX_API,
+        )
+        await helper.custom_objects_api.patch_namespaced_custom_object(
+            namespace=namespace,
+            name=claim_name,
+            body={
+                "spec": {
+                    "lifecycle": {
+                        "shutdownTime": _at(settings.AGENTSANDBOX_MAX_IDLE_SECONDS),
+                        "shutdownPolicy": "Delete",
+                    }
+                }
+            },
+            _content_type=_MERGE_PATCH,
+            **_CLAIM_API,
         )
         expired = any(
             c.get("type") == "Ready" and c.get("reason") == "SandboxExpired"

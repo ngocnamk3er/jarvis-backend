@@ -260,7 +260,8 @@ metadata:
 rules:
   - apiGroups: ["extensions.agents.x-k8s.io"]
     resources: ["sandboxclaims"]
-    verbs: ["get", "list", "watch", "create", "delete"]
+    # patch carries the long deadline — the one that eventually reclaims disk.
+    verbs: ["get", "list", "watch", "create", "delete", "patch"]
   - apiGroups: ["agents.x-k8s.io"]   # core CRD, not extensions.* — see step 1
     resources: ["sandboxes"]
     # patch is what lets sandbox_manager push the expiry forward on each use,
@@ -319,7 +320,8 @@ already behind. `[async]` is only needed for `AsyncSandboxClient`.
 ```python
 AGENTSANDBOX_NAMESPACE: str = "default"
 AGENTSANDBOX_WARMPOOL: str = "python-sandbox-pool"
-AGENTSANDBOX_TTL_SECONDS: int = 1_800   # idle before the sandbox is paused
+AGENTSANDBOX_TTL_SECONDS: int = 1_800        # idle before the sandbox pauses
+AGENTSANDBOX_MAX_IDLE_SECONDS: int = 604_800 # idle before it is deleted outright
 ```
 
 `app/agents/tools/sandbox_manager.py` is the entire client. Abridged —
@@ -480,10 +482,24 @@ What the pause does *not* preserve is anything outside the mounted volume —
 a running process, and notably any `pip install` the agent did, since that
 lands in the image layer. The agent will not know it needs to reinstall.
 
-Nothing deletes an abandoned sandbox's volume on its own. Expiry reclaims
-the pod, which is the expensive part, but a conversation that is never
-deleted keeps its 1Gi indefinitely. A second, much longer backstop would cap
-that; there isn't one today.
+So there are two deadlines, both pushed forward on every use, so each
+measures idleness rather than age:
+
+| Set on | After | Policy | Effect |
+|---|---|---|---|
+| **Sandbox** | 30 min | `Retain` | Pod deleted, volume kept — the pause |
+| **claim** | 7 days | `Delete` | Claim, Sandbox and volume all deleted |
+
+The short one frees what is expensive (CPU, memory) while a conversation is
+quiet; the long one is the only thing that ever reclaims disk, since the
+pause never does.
+
+Watch the word `Retain`: it names the object it is set on, so it means
+opposite things at the two levels. On the Sandbox it keeps the Sandbox, and
+the volume beneath it survives. On the claim it keeps the *claim* but still
+deletes the Sandbox underneath, taking the volume — which is why the long
+deadline uses `Delete` outright, and why the SDK's `shutdown_after_seconds`,
+which writes claim-level lifecycle, is not the tool for the pause.
 
 ### Always pass `connection_config`
 

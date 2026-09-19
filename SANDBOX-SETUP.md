@@ -129,22 +129,65 @@ injection seam noted in step 5.
 
 ## 3. Create the SandboxTemplate + SandboxWarmPool
 
-Upstream's own template and warm pool, applied straight from the repo —
-they only carry placeholders, so there is nothing to hand-maintain here.
-The stock `python-runtime-sandbox` image needs no build; the warm pool
-keeps pods pre-started so a conversation's first call doesn't pay full pod
-startup.
+The stock `python-runtime-sandbox` image needs no build; the warm pool keeps
+pods pre-started so a conversation's first call doesn't pay full pod
+startup. The template is upstream's, with two additions — see
+[Finishing the volume wiring](#finishing-the-volume-wiring) below for why
+they are not optional.
 
 ```bash
+kubectl apply -f - <<'EOF'
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: python-sandbox-template
+  namespace: default
+spec:
+  podTemplate:
+    spec:
+      # Optional: uncomment for kernel-level isolation between sandboxes
+      # rather than namespace-level, once that RuntimeClass is installed.
+      # runtimeClassName: gvisor
+      # runtimeClassName: kata-qemu
+      containers:
+      - name: python-runtime
+        image: us-central1-docker.pkg.dev/k8s-staging-images/agent-sandbox/python-runtime-sandbox:latest-main
+        # The two additions. Upstream declares the volume below but never
+        # mounts it and never points the runtime at it.
+        env:
+        - name: SANDBOX_BASE_DIR
+          value: /workspace
+        volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+        ports:
+        - containerPort: 8888
+        readinessProbe:
+          httpGet: {path: "/", port: 8888}
+          initialDelaySeconds: 0
+          periodSeconds: 1
+        livenessProbe:
+          httpGet: {path: "/", port: 8888}
+          initialDelaySeconds: 2
+          periodSeconds: 10
+        resources:
+          requests: {cpu: "250m", memory: "512Mi", ephemeral-storage: "512Mi"}
+      restartPolicy: "OnFailure"
+  volumeClaimTemplatesPolicy: Overrides
+  volumeClaimTemplates:
+    - metadata:
+        name: workspace
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: "1Gi"
+EOF
+
+# The warm pool is upstream's unchanged, but it ships replicas: 0, which
+# pre-starts nothing.
 VERSION=v1.0.2
 BASE=https://raw.githubusercontent.com/kubernetes-sigs/agent-sandbox/refs/tags/${VERSION}/clients/python/agentic-sandbox-client
-
-curl -sSL ${BASE}/python-sandbox-template.yaml \
-  | sed -e 's|${SANDBOX_NAMESPACE}|default|g' \
-        -e 's|${SANDBOX_TEMPLATE_NAME}|python-sandbox-template|g' \
-  | kubectl apply -f -
-
-# The warm pool ships replicas: 0, which pre-starts nothing.
 curl -sSL ${BASE}/python-sandbox-warmpool.yaml \
   | sed -e 's|${SANDBOX_NAMESPACE}|default|g' \
         -e 's|${SANDBOX_TEMPLATE_NAME}|python-sandbox-template|g' \
@@ -153,6 +196,31 @@ curl -sSL ${BASE}/python-sandbox-warmpool.yaml \
   | kubectl apply -f -
 
 kubectl get pods -n default -w   # wait for python-sandbox-pool-xxx to hit 1/1 Running
+```
+
+### Finishing the volume wiring
+
+Upstream's example template declares `volumeClaimTemplates`, so the
+controller provisions a 1Gi PVC per sandbox and attaches it to the pod —
+and then nothing mounts it. Kubernetes needs both halves: `spec.volumes`
+makes the volume available to the pod, `volumeMounts` makes it visible
+inside the container. Without the second, the storage is provisioned,
+bound, billed, and unreachable.
+
+Compounding it, the runtime writes to `SANDBOX_BASE_DIR`, which defaults to
+`/app` — the directory holding the sandbox server's own source. Left alone
+you get all three of:
+
+- files written to the container's ephemeral layer, lost whenever the pod goes
+- `ls` showing the runtime's `main.py` and `requirements.txt` in every session
+- the agent able to overwrite the server running it
+
+Verify both landed, since a template edit does not reach existing pods
+(see the note in step 6):
+
+```bash
+pod=$(kubectl get pods -n default -l agents.x-k8s.io/warm-pool-sandbox --no-headers | awk '{print $1}' | head -1)
+kubectl get pod $pod -n default -o jsonpath='{.spec.containers[0].volumeMounts}{"\n"}'
 ```
 
 The two names must agree: the warm pool's `sandboxTemplateRef` has to match
@@ -195,7 +263,11 @@ rules:
     verbs: ["get", "list", "watch", "create", "delete"]
   - apiGroups: ["agents.x-k8s.io"]   # core CRD, not extensions.* — see step 1
     resources: ["sandboxes"]
-    verbs: ["get", "list", "watch"]
+    # patch is what lets sandbox_manager push the expiry forward on each use,
+    # and revive one that has already lapsed. Without it the sandbox still
+    # works, but nothing ever expires and nothing wakes back up — and the
+    # failure is silent, since the extension is best-effort and only logs.
+    verbs: ["get", "list", "watch", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -213,7 +285,8 @@ API group without complaint, and the gap only shows up as a failure at
 runtime:
 
 ```bash
-kubectl auth can-i get sandboxes    --as=system:serviceaccount:jarvis:jarvis-backend -n default
+kubectl auth can-i get sandboxes        --as=system:serviceaccount:jarvis:jarvis-backend -n default
+kubectl auth can-i patch sandboxes      --as=system:serviceaccount:jarvis:jarvis-backend -n default
 kubectl auth can-i create sandboxclaims --as=system:serviceaccount:jarvis:jarvis-backend -n default
 ```
 
@@ -246,6 +319,7 @@ already behind. `[async]` is only needed for `AsyncSandboxClient`.
 ```python
 AGENTSANDBOX_NAMESPACE: str = "default"
 AGENTSANDBOX_WARMPOOL: str = "python-sandbox-pool"
+AGENTSANDBOX_TTL_SECONDS: int = 1_800   # idle before the sandbox is paused
 ```
 
 `app/agents/tools/sandbox_manager.py` is the entire client. Abridged —
@@ -255,6 +329,7 @@ timeout translation:
 ```python
 import re
 import shlex
+from datetime import datetime, timedelta, timezone
 
 from k8s_agent_sandbox import AsyncSandboxClient
 from k8s_agent_sandbox.exceptions import SandboxRequestError
@@ -270,6 +345,11 @@ _ROUTER_URL = "http://sandbox-router-svc.agent-sandbox-system.svc.cluster.local:
 
 def init_client() -> None:
     global _client
+    # cleanup=False: the SDK otherwise registers an atexit hook deleting every
+    # sandbox this process tracks, which would make each rollout destroy the
+    # volumes of all conversations in flight. The expiry below reclaims
+    # instead, from the cluster, so it also covers sandboxes an earlier
+    # process created and this one never heard of.
     # connection_config is NOT optional in practice — see below. Through the
     # router, never pod-direct, per "How it works".
     _client = AsyncSandboxClient(
@@ -283,6 +363,38 @@ def _label_value(thread_id: str) -> str:
     return safe.strip("-_.") or "unknown"
 
 
+async def _touch_expiry(claim_name: str, namespace: str) -> None:
+    """Push the sandbox's expiry to now + TTL, reviving it if it lapsed.
+
+    Called before every use, which is what makes the deadline behave as an
+    idle timeout: the clock only runs while the conversation is quiet.
+
+    Has to run *before* get_sandbox(): the SDK treats SandboxExpired as
+    terminal and raises SandboxNotFoundError rather than returning something
+    to revive. The Sandbox's name comes from the claim's status.sandbox.name,
+    which survives expiry — status.sandboxName does not.
+    """
+    helper = _client.k8s_helper
+    claim = await helper.get_sandbox_claim(claim_name, namespace)
+    status = (claim or {}).get("status") or {}
+    name = (status.get("sandbox") or {}).get("name")
+    if not name:
+        return
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=settings.AGENTSANDBOX_TTL_SECONDS)
+    await helper.custom_objects_api.patch_namespaced_custom_object(
+        group="agents.x-k8s.io", version="v1beta1", plural="sandboxes",
+        namespace=namespace, name=name,
+        body={"spec": {"shutdownTime": deadline.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                       "shutdownPolicy": "Retain"}},
+        # Required — the client offers json-patch and merge-patch and picks
+        # the first, rejecting this dict as a malformed JSON Patch op list.
+        _content_type="application/merge-patch+json",
+    )
+    if any(c.get("type") == "Ready" and c.get("reason") == "SandboxExpired"
+           for c in status.get("conditions") or []):
+        await helper.wait_for_sandbox_ready(name, namespace, _CLAIM_READY_TIMEOUT)
+
+
 async def _get_or_create_sandbox(thread_id: str):
     namespace = settings.AGENTSANDBOX_NAMESPACE
     label = _label_value(thread_id)
@@ -291,17 +403,21 @@ async def _get_or_create_sandbox(thread_id: str):
     # call in the same conversation has to find it back by selector.
     existing = await _client.list_all_sandboxes(namespace, label_selector=f"{_THREAD_LABEL}={label}")
     if existing:
-        sandbox = await _client.get_sandbox(existing[0], namespace)
-    else:
-        sandbox = await _client.create_sandbox(
-            warmpool=settings.AGENTSANDBOX_WARMPOOL,
-            namespace=namespace,
-            sandbox_ready_timeout=_CLAIM_READY_TIMEOUT,
-            labels={_THREAD_LABEL: label},
-        )
-    # This is the seam for router auth, if ALLOW_UNAUTHENTICATED_ROUTER="false".
-    # SandboxDirectConnectionConfig has no headers field, but the connector's
-    # httpx client is reachable and shared by .commands and .files:
+        await _touch_expiry(existing[0], namespace)
+        return await _client.get_sandbox(existing[0], namespace)
+
+    sandbox = await _client.create_sandbox(
+        warmpool=settings.AGENTSANDBOX_WARMPOOL,
+        namespace=namespace,
+        sandbox_ready_timeout=_CLAIM_READY_TIMEOUT,
+        labels={_THREAD_LABEL: label},
+    )
+    # claim_name, not sandbox_id — the latter names the Sandbox, a different
+    # object, and would silently find no claim.
+    await _touch_expiry(sandbox.claim_name, namespace)
+    # This is also the seam for router auth, if ALLOW_UNAUTHENTICATED_ROUTER
+    # is "false". SandboxDirectConnectionConfig has no headers field, but the
+    # connector's httpx client is reachable and shared by .commands/.files:
     #   sandbox.connector.client.headers.update({"Authorization": f"Bearer {token}"})
     return sandbox
 
@@ -336,6 +452,38 @@ async def reset(thread_id: str) -> None:
     ):
         await _client.delete_sandbox(claim_name, namespace)
 ```
+
+### Lifecycle: what expiry destroys, and what it doesn't
+
+A sandbox has three nested lifetimes, and conflating them is the easiest way
+to lose a user's files:
+
+| Event | Pod | Volume | Files |
+|---|---|---|---|
+| Pod dies (eviction, node reboot) | recreated | kept | **kept** |
+| Expiry — `shutdownTime` with `Retain` | deleted | kept | **kept** |
+| Claim deleted — `reset()`, conversation deleted | deleted | deleted | **gone** |
+
+So expiry is a pause, not a teardown. Upstream documents it plainly: *"The
+underlying resources (Pod, Service) are always deleted on expiry regardless
+of this policy"* — `shutdownPolicy` governs only whether the Sandbox object
+itself survives. `Retain` keeps it, so extending `shutdownTime` later brings
+the same volume back, measured at under two seconds.
+
+This is why the expiry goes on the **Sandbox** rather than the claim's own
+`lifecycle`. The SDK's `shutdown_after_seconds` is the obvious-looking route
+and the wrong one: it hardcodes `shutdownPolicy: Delete` on the claim, and
+deleting a claim takes the Sandbox and its volume with it, because the PVC
+carries an ownerReference back to the Sandbox.
+
+What the pause does *not* preserve is anything outside the mounted volume —
+a running process, and notably any `pip install` the agent did, since that
+lands in the image layer. The agent will not know it needs to reinstall.
+
+Nothing deletes an abandoned sandbox's volume on its own. Expiry reclaims
+the pod, which is the expensive part, but a conversation that is never
+deleted keeps its 1Gi indefinitely. A second, much longer backstop would cap
+that; there isn't one today.
 
 ### Always pass `connection_config`
 
@@ -384,6 +532,13 @@ hits the same default and the same error without it.
   relative paths.
 
 ## 6. Verify
+
+> **Editing the template does not reach existing sandboxes.** Each `Sandbox`
+> snapshots the pod spec when it is created, so deleting a pod just rebuilds
+> it from that stale copy — the template-ref hash does not change either, so
+> the controller sees nothing to roll. To pick up a template change, delete
+> the `Sandbox` objects (`kubectl delete sandbox -n default --all`) and let
+> the warm pool recreate them.
 
 Run a command end to end, from a real `backend` pod through the real tool:
 

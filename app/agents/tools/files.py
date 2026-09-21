@@ -19,6 +19,7 @@ import httpx
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
+from app.agents import retrieval
 from app.agents.tools.sandbox_manager import get_thread_id
 from app.agents.tools.sandbox_save import save_and_stub
 from app.clients import file_client
@@ -126,16 +127,28 @@ async def search_files(query: str, top_k: int, config: RunnableConfig) -> str:
         query: Natural-language description of what to find.
         top_k: Max number of chunks to return — 5 is a reasonable default.
     """
+    trace: list[str] = []
     try:
-        results = await file_client.search_vector(_user_id(config), query, top_k)
+        if retrieval.enabled():
+            results, trace = await retrieval.agentic_search(_user_id(config), query, top_k)
+        else:
+            results = await file_client.search_vector(_user_id(config), query, top_k)
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 400:
             return "Semantic search isn't configured for this deployment — use grep_files instead."
         return f"Error: {e.response.text}"
     if not results:
         return f"No semantic matches for '{query}'"
+
     lines = []
     for r in results:
-        snippet = r["chunk_text"][:300]
-        lines.append(f"{r['path']} (score={r['score']:.2f}):\n{snippet}")
-    return "\n\n".join(lines)
+        # rerank_score is absent when agentic retrieval is off or fell back to
+        # plain vector search, so report whichever ranking actually applied
+        # rather than implying a judgement that never happened.
+        if "rerank_score" in r:
+            label = f"relevance={r['rerank_score']:.0f}/10, similarity={r['score']:.2f}"
+        else:
+            label = f"similarity={r['score']:.2f}"
+        lines.append(f"{r['path']} ({label}):\n{r['chunk_text'][:300]}")
+    body = "\n\n".join(lines)
+    return f"[retrieval: {'; '.join(trace)}]\n\n{body}" if trace else body

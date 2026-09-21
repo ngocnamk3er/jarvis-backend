@@ -136,6 +136,18 @@ async def grep_files(user_id: str, query: str, path: str = "/") -> list[dict]:
     return [FileSearchResultDTO(**n).model_dump() for n in resp.json()]
 
 
+async def rerank(query: str, documents: list[str], top_n: int | None = None) -> list[dict]:
+    """Returns [{"index", "score"}] best first; `index` points back into
+    `documents`. An unconfigured reranker returns the input order with zero
+    scores rather than an error."""
+    resp = await _get_client().post(
+        "/files/search/rerank",
+        json={"query": query, "documents": documents, "top_n": top_n},
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 async def search_vector(user_id: str, query: str, top_k: int = 5) -> list[dict]:
     resp = await _get_client().post(
         "/files/search/vector", json={"user_id": user_id, "query": query, "top_k": top_k}

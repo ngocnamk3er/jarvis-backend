@@ -57,6 +57,18 @@ class Settings(BaseSettings):
     # forward on every use, so it measures abandonment rather than age.
     AGENTSANDBOX_MAX_IDLE_SECONDS: int = 604_800  # 7 days
 
+    # Agentic retrieval for search_files — decompose, rerank, and retry once
+    # when the first pass misses. See app/agents/retrieval.py. Costs two LLM
+    # calls on the subagent model per search, three when a retry fires, so
+    # it's a quality-for-latency trade; turn it off to fall back to one-shot
+    # vector search.
+    AGENTIC_RAG_ENABLED: bool = True
+    # The helper model for decomposition and reflection. Separate from the
+    # agent's own model on purpose: that one defaults to a reasoning model at
+    # high effort, which made each of these short calls take ~20s. Pick
+    # something fast and non-reasoning — these are classification tasks.
+    RETRIEVAL_MODEL: str = "deepseek/deepseek-v4-flash"
+
     class Config:
         env_file = ".env"
         case_sensitive = True

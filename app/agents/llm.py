@@ -43,22 +43,52 @@ class ThinkingChatOpenAI(ChatOpenAI):
     # the main model by default until the user explicitly overrides it.
     is_subagent_model: bool = False
 
-    def _get_request_payload(self, input_, *, stop=None, **kwargs):
+    def _configurable(self) -> dict:
+        """LangGraph's per-run configurable, or {} outside a run."""
         try:
             from langgraph.config import get_config
-            cfg = get_config().get("configurable", {})
+            return get_config().get("configurable", {})
         except RuntimeError:
-            cfg = {}
+            return {}
 
-        effort = cfg.get("thinking_effort", "high")
+    def _model_override(self) -> str | None:
+        """The model this turn should actually use, or None to keep self.model."""
+        if not self.honor_model_override:
+            return None
+        cfg = self._configurable()
+        if self.is_subagent_model:
+            return cfg.get("subagent_model") or cfg.get("model")
+        return cfg.get("model")
+
+    def _get_invocation_params(self, stop=None, **kwargs):
+        """Report the model the request will actually use, not the one this
+        instance happens to be constructed with.
+
+        LangChain builds these params and hands them to every callback
+        *before* _get_request_payload() below swaps in the per-turn model, and
+        _get_ls_params() derives ls_model_name from them in turn. Without this
+        override a tracer records OPENROUTER_MODEL for every single turn no
+        matter which model the user picked — and, worse, prices the call
+        against that model. Verified against Langfuse: a run served by
+        qwen3.5-9b was recorded as deepseek-r1-0528-qwen3-8b:free.
+
+        Fallback instances need nothing here: each carries its own model and
+        has honor_model_override False, so _model_override() returns None and
+        the name they report is already the one that answered.
+        """
+        params = super()._get_invocation_params(stop=stop, **kwargs)
+        override = self._model_override()
+        if override and "model" not in kwargs:
+            params["model"] = override
+        return params
+
+    def _get_request_payload(self, input_, *, stop=None, **kwargs):
+        effort = self._configurable().get("thinking_effort", "high")
         if "extra_body" not in kwargs:
             kwargs["extra_body"] = {"reasoning": {"effort": effort, "exclude": False}}
 
-        if self.is_subagent_model:
-            model_override = cfg.get("subagent_model") or cfg.get("model")
-        else:
-            model_override = cfg.get("model")
-        if model_override and self.honor_model_override and "model" not in kwargs:
+        model_override = self._model_override()
+        if model_override and "model" not in kwargs:
             kwargs["model"] = model_override
 
         return super()._get_request_payload(input_, stop=stop, **kwargs)

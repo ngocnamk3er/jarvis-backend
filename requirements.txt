@@ -22,3 +22,7 @@ PyJWT[crypto]>=2.12.0
 # kubernetes-sigs/agent-sandbox client — see app/agents/tools/sandbox_manager.py,
 # talks to the agent-sandbox controller's CRDs in-cluster.
 k8s-agent-sandbox[async]==1.0.2
+# Langfuse tracing for agent runs — see app/core/observability.py. Major
+# version has to track the self-hosted server's (jarvis-deploy/langfuse/),
+# which runs v4.
+langfuse>=4.0,<5

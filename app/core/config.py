@@ -36,6 +36,17 @@ class Settings(BaseSettings):
 
     LLM_CACHE: bool = False
 
+    # Langfuse — the self-hosted trace store in jarvis-deploy/langfuse/.
+    # Empty host disables tracing entirely (see app/core/observability.py),
+    # which is what local runs and CI get by default.
+    LANGFUSE_HOST: str = ""
+    LANGFUSE_PUBLIC_KEY: str = ""
+    LANGFUSE_SECRET_KEY: str = ""
+    # Stamped on every trace so one Langfuse project can hold more than one
+    # cluster without the dashboards averaging them together. Langfuse
+    # restricts this to lowercase letters, digits, "-" and "_".
+    LANGFUSE_ENVIRONMENT: str = "development"
+
     # kubernetes-sigs/agent-sandbox — backs the bash tool + present_file, one
     # dedicated sandbox pod per conversation. See sandbox_manager.py and
     # SANDBOX-SETUP.md. The warm pool name must match a SandboxWarmPool that

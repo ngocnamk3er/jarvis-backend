@@ -6,6 +6,7 @@ from langgraph.types import Command
 from app.agents.middleware import TOOL_CALL_LIMIT_EVENT
 from app.agents.tools.sandbox_manager import reset as reset_sandbox
 from app.clients import conversation_client
+from app.core import observability
 from app.schemas.chat import AVAILABLE_MODELS
 
 # Looked up in stream() before touching the graph at all — refuses a new
@@ -197,6 +198,11 @@ def _make_config(
             # Read by ToolToggleMiddleware (main agent + research subagent).
             "disabled_tools": [] if web_search else ["web_search", "web_fetch"],
         },
+        # Langfuse. Both are empty/absent unless tracing is configured, so
+        # this is the only place in the request path that knows about it —
+        # the graph, the middleware and the tools stay unaware.
+        "callbacks": observability.callbacks(),
+        "metadata": observability.trace_metadata(thread_id, user_id),
         "recursion_limit": 200,
     }
 

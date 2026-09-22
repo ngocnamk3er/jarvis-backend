@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.core import observability
 from app.api.v1.router import router as api_v1_router
 from app.db.connection import init_db, close_db, get_store
 from app.clients import conversation_client, file_client
@@ -15,6 +16,7 @@ from app.agents.llm import enable_llm_cache
 async def lifespan(app: FastAPI):
     if settings.LLM_CACHE:
         enable_llm_cache()
+    observability.init_tracing()
     conversation_client.init_client()
     file_client.init_client()
     sandbox_manager.init_client()
@@ -29,6 +31,7 @@ async def lifespan(app: FastAPI):
     # share the same checkpointer as app.state.graph above.
     app.state.history_graph = build_graph(checkpointer=checkpointer, store=store, include_tools=False)
     yield
+    observability.shutdown_tracing()
     await close_db()
     await conversation_client.close_client()
     await file_client.close_client()

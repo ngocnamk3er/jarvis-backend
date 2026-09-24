@@ -185,6 +185,7 @@ def _make_config(
     model: str | None = None,
     subagent_model: str | None = None,
     web_search: bool = True,
+    auto_approve_bash: bool = False,
 ) -> dict:
     return {
         "configurable": {
@@ -197,6 +198,8 @@ def _make_config(
             "subagent_model": subagent_model,
             # Read by ToolToggleMiddleware (main agent + research subagent).
             "disabled_tools": [] if web_search else ["web_search", "web_fetch"],
+            # Read by _bash_needs_approval (app/agents/graph.py).
+            "auto_approve_bash": auto_approve_bash,
         },
         # Langfuse. Both are empty/absent unless tracing is configured, so
         # this is the only place in the request path that knows about it —
@@ -521,6 +524,7 @@ class ChatService:
         model: str | None = None,
         subagent_model: str | None = None,
         web_search: bool = True,
+        auto_approve_bash: bool = False,
     ):
         context_window = _MODEL_CONTEXT_WINDOW.get(model)
         if context_window:
@@ -534,7 +538,8 @@ class ChatService:
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 return
 
-        config = _make_config(thread_id, user_id, thinking_effort, model, subagent_model, web_search)
+        config = _make_config(thread_id, user_id, thinking_effort, model, subagent_model,
+                              web_search, auto_approve_bash)
         async for chunk in self._run_graph(
             {"messages": [HumanMessage(content=content)]}, config, graph
         ):

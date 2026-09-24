@@ -49,6 +49,7 @@ async def chat_stream(
             request.model,
             request.subagent_model,
             request.web_search,
+            request.auto_approve_bash,
         ),
         media_type="text/event-stream",
     )

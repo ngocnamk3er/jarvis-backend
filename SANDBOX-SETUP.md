@@ -131,7 +131,7 @@ injection seam noted in step 5.
 
 The stock `python-runtime-sandbox` image needs no build; the warm pool keeps
 pods pre-started so a conversation's first call doesn't pay full pod
-startup. The template is upstream's, with two additions — see
+startup. The template is upstream's, with three additions — see
 [Finishing the volume wiring](#finishing-the-volume-wiring) below for why
 they are not optional.
 
@@ -152,11 +152,14 @@ spec:
       containers:
       - name: python-runtime
         image: us-central1-docker.pkg.dev/k8s-staging-images/agent-sandbox/python-runtime-sandbox:latest-main
-        # The two additions. Upstream declares the volume below but never
-        # mounts it and never points the runtime at it.
+        # The three additions. Upstream declares the volume below but never
+        # mounts it and never points the runtime at it, and leaves HOME
+        # unset — see below for what each one costs if omitted.
         env:
         - name: SANDBOX_BASE_DIR
           value: /workspace
+        - name: HOME
+          value: /workspace/.home
         volumeMounts:
         - name: workspace
           mountPath: /workspace
@@ -215,12 +218,44 @@ you get all three of:
 - `ls` showing the runtime's `main.py` and `requirements.txt` in every session
 - the agent able to overwrite the server running it
 
-Verify both landed, since a template edit does not reach existing pods
+### Why HOME
+
+Upstream leaves `HOME` unset, so it resolves to `/`, while the container
+runs as uid 1000. Nothing writes to `$HOME` directly, which is why this
+goes unnoticed — until the agent tries to install a package:
+
+```
+Defaulting to user installation because normal site-packages is not writeable
+ERROR: Could not install packages due to an OSError:
+       [Errno 13] Permission denied: '/.local'
+```
+
+Two failures in a row, and only the second is a defect. System
+site-packages being root-owned is correct and expected; pip handles it by
+falling back to a per-user install under `$HOME/.local`. With `HOME=/`
+that fallback lands on `/.local`, which is root-owned too — so the
+recovery path points back at the thing it was recovering from. The pip
+cache (`$HOME/.cache`) fails the same way, which is the warning that
+shows up first.
+
+Pointing `HOME` at `/workspace/.home` puts it on the sandbox's PVC:
+writable, and the install survives a pod restart within the same
+conversation. A single dotted directory rather than `/workspace` itself,
+so `ls` in the agent's working directory stays clean.
+
+This is a floor, not a fix for the wider problem — a new conversation
+gets a new PVC, and in 195 recorded `bash` calls the agent has never once
+tried `pip install` on its own, including the four times it reached for a
+missing `pdftotext`. Packages the agent is expected to have belong in the
+warm pool, pre-installed; `HOME` only makes that possible.
+
+Verify all three landed, since a template edit does not reach existing pods
 (see the note in step 6):
 
 ```bash
 pod=$(kubectl get pods -n default -l agents.x-k8s.io/warm-pool-sandbox --no-headers | awk '{print $1}' | head -1)
 kubectl get pod $pod -n default -o jsonpath='{.spec.containers[0].volumeMounts}{"\n"}'
+kubectl exec -n default $pod -- sh -c 'echo "HOME=$HOME"; pip install --quiet --user openpyxl && python3 -c "import openpyxl; print(openpyxl.__version__)"'
 ```
 
 The two names must agree: the warm pool's `sandboxTemplateRef` has to match
@@ -553,8 +588,21 @@ hits the same default and the same error without it.
 > snapshots the pod spec when it is created, so deleting a pod just rebuilds
 > it from that stale copy — the template-ref hash does not change either, so
 > the controller sees nothing to roll. To pick up a template change, delete
-> the `Sandbox` objects (`kubectl delete sandbox -n default --all`) and let
-> the warm pool recreate them.
+> the sandboxes and let the warm pool recreate them.
+>
+> **Delete at the claim layer, not the sandbox layer.** Ownership runs
+> `SandboxClaim` → `Sandbox` → `Pod` + `PVC`, and only warm-pool sandboxes
+> have nothing above them. A conversation's sandbox is owned by a claim, so
+> `kubectl delete sandbox --all` deletes the middle of the chain and the
+> controller rebuilds every one of them from the claims — each with a fresh
+> PVC and, unlike the expired ones just removed, a running pod. Doing this
+> against 65 expired sandboxes took a 1-pod namespace to 51 running pods and
+> the node from 16% memory to 99%. Delete the claims instead and the cascade
+> reaches all the way down:
+>
+> ```bash
+> kubectl delete sandboxclaim -n default --all
+> ```
 
 Run a command end to end, from a real `backend` pod through the real tool:
 

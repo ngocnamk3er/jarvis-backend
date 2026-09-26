@@ -17,22 +17,21 @@ from app.agents.tools import tools
 def _bash_needs_approval(request) -> bool:
     """Whether this bash call should stop and ask a human. False auto-approves.
 
-    Benchmarks set `auto_approve_bash` because they approve every call anyway,
-    but the round trip is not free: each approval ends the SSE stream and
-    needs a fresh /chat/resume, so a run wanting nine bash calls needs nine
-    requests and dies on the tenth against the client's HITL round cap. Two of
-    the 42 GAIA cases on 2026-09-23 failed exactly there, having answered
-    nothing, and the access token can expire part-way through the sequence on
-    top of that.
+    False when the run is `unattended` — nobody is there to answer. Benchmarks
+    approve every call anyway, and the round trip is not free: each approval
+    ends the SSE stream and needs a fresh /chat/resume, so a run wanting nine
+    bash calls needs nine requests, one long chain to lose an access token in
+    or to run past the client's round cap. Cases on 2026-09-23 finished having
+    answered nothing for that reason.
 
     Read per call rather than fixed at build time, because this graph also
-    serves real chat, where a human still has to see the prompt.
+    serves real chat, where a human does have to see the prompt.
     """
     try:
         cfg = (request.runtime.config or {}).get("configurable", {})
     except AttributeError:
         return True
-    return not cfg.get("auto_approve_bash", False)
+    return not cfg.get("unattended", False)
 
 
 def build_graph(

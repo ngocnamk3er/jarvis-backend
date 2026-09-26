@@ -185,8 +185,15 @@ def _make_config(
     model: str | None = None,
     subagent_model: str | None = None,
     web_search: bool = True,
-    auto_approve_bash: bool = False,
+    unattended: bool = False,
 ) -> dict:
+    disabled = [] if web_search else ["web_search", "web_fetch"]
+    if unattended:
+        # ask_user interrupts for a human reply that will never come. Left
+        # enabled, the run ends there with no answer, and a benchmark records
+        # that as the agent failing the question rather than as the harness
+        # having no way to respond.
+        disabled = [*disabled, "ask_user"]
     return {
         "configurable": {
             "thread_id": thread_id,
@@ -197,9 +204,9 @@ def _make_config(
             "model": model,
             "subagent_model": subagent_model,
             # Read by ToolToggleMiddleware (main agent + research subagent).
-            "disabled_tools": [] if web_search else ["web_search", "web_fetch"],
+            "disabled_tools": disabled,
             # Read by _bash_needs_approval (app/agents/graph.py).
-            "auto_approve_bash": auto_approve_bash,
+            "unattended": unattended,
         },
         # Langfuse. Both are empty/absent unless tracing is configured, so
         # this is the only place in the request path that knows about it —
@@ -524,7 +531,7 @@ class ChatService:
         model: str | None = None,
         subagent_model: str | None = None,
         web_search: bool = True,
-        auto_approve_bash: bool = False,
+        unattended: bool = False,
     ):
         context_window = _MODEL_CONTEXT_WINDOW.get(model)
         if context_window:
@@ -539,7 +546,7 @@ class ChatService:
                 return
 
         config = _make_config(thread_id, user_id, thinking_effort, model, subagent_model,
-                              web_search, auto_approve_bash)
+                              web_search, unattended)
         async for chunk in self._run_graph(
             {"messages": [HumanMessage(content=content)]}, config, graph
         ):

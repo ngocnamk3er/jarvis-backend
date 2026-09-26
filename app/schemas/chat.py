@@ -78,11 +78,13 @@ class ChatRequest(BaseModel):
     # something different.
     subagent_model: str | None = None
     web_search: bool = True
-    # Skip the bash approval prompt for this run. Off by default: a human
-    # chatting must still see it. Benchmarks turn it on because they approve
-    # every call anyway, and each approval otherwise costs a whole extra
-    # request (see _bash_needs_approval in app/agents/graph.py).
-    auto_approve_bash: bool = False
+    # No human is watching this run, so nothing may stop and wait for one.
+    # Bash auto-approves and ask_user is dropped from the tool list. Both
+    # follow from the same fact, which is why this is one flag and not two:
+    # an unattended run that asks a question does not hang, it just ends with
+    # no answer, and the caller cannot tell that apart from the agent failing.
+    # Benchmarks set it; a human chatting must not.
+    unattended: bool = False
 
 
 class ResumeRequest(BaseModel):

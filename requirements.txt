@@ -5,6 +5,11 @@ pydantic-settings>=2.10.1
 python-dotenv==1.0.1
 httpx>=0.28.1
 markdownify>=0.13.1
+# web_fetch reads PDFs and .docx as text; without these it decodes the raw
+# bytes and hands the model mojibake. Same versions as jarvis-file-service,
+# which extracts the same two formats for uploads.
+pypdf>=4.2.0
+python-docx>=1.1.0
 # Required by FastAPI to parse multipart/form-data (Form fields + UploadFile)
 # on POST /files/upload (see app/api/v1/endpoints/files.py).
 python-multipart>=0.0.9

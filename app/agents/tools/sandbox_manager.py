@@ -319,6 +319,19 @@ async def read_file(thread_id: str, name: str) -> tuple[bytes, str, str]:
     return content, mime, name.rsplit("/", 1)[-1]
 
 
+async def write_file(thread_id: str, name: str, content: bytes) -> None:
+    """Put `content` into the conversation's sandbox as `name`.
+
+    One binary-safe call, unlike sandbox_save.save_and_stub's
+    base64-through-`bash -c` path. That one exists to write model-facing
+    *text* and has to fit through the command channel in 60k chunks; this
+    carries whole files, where the same route would turn a 5MB spreadsheet
+    into ~7MB of base64 split across a hundred execs.
+    """
+    sandbox = await _get_or_create_sandbox(thread_id)
+    await sandbox.files.write(normalize_workspace_path(name), content)
+
+
 async def reset(thread_id: str) -> None:
     """Tear the conversation's sandbox down (deletes its claim + pod)."""
     client = _get_client()

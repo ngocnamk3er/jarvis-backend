@@ -9,8 +9,11 @@ stateful "current directory" would race across concurrent calls the same
 way it would with any shell -- explicit paths sidestep that entirely. See
 ~/.claude/plans/cosmic-drifting-pinwheel.md for the full rationale.
 
-Read-only — no HumanInTheLoopMiddleware approval needed, same posture as
-web_search/web_fetch (unlike bash, which can mutate the sandbox)."""
+No HumanInTheLoopMiddleware approval on any of these, same posture as
+web_search/web_fetch (unlike bash, which can run arbitrary commands). All
+but `fetch_file` are read-only, and `fetch_file` only writes a file the
+user already owns into that user's own throwaway sandbox — the same thing
+web_fetch does with a page it just downloaded."""
 
 import re
 import uuid
@@ -20,9 +23,20 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
 from app.agents import retrieval
+from app.agents.tools import sandbox_manager
 from app.agents.tools.sandbox_manager import get_thread_id
 from app.agents.tools.sandbox_save import save_and_stub
 from app.clients import file_client
+
+# The bytes sit in backend memory between the two hops (workspace → here →
+# sandbox), so this bounds memory, not sandbox disk. Well above the office
+# documents this exists for; a media file that trips it wants a different
+# approach anyway.
+_MAX_FETCH_BYTES = 50 << 20
+# Long enough to keep a real document name recognisable, short enough to
+# stay well inside any filesystem's per-component limit once the workspace
+# name has been widened by escaping.
+_MAX_NAME_CHARS = 80
 
 
 def _user_id(config: RunnableConfig) -> str:
@@ -86,13 +100,97 @@ async def read_file(path: str, config: RunnableConfig) -> str:
     if node["indexing_status"] in ("pending", "extracting"):
         return "This file is still being processed — try again in a moment."
     if node["extracted_text"] is None:
-        return f"'{node['name']}' has no extractable text (unsupported or binary file type)."
+        # A spreadsheet lands here every time — extraction covers pdf, docx
+        # and the plain-text extensions, nothing else. Saying only "no text"
+        # reads as "this file is unusable", which is wrong and is where the
+        # agent used to give up; name the tool that does work on it.
+        return (
+            f"'{node['name']}' has no extractable text (unsupported or binary file type). "
+            f"If its content is structured — a spreadsheet, a PDF of scans, an image — use "
+            f"fetch_file to copy it into the bash sandbox and open it with a library there."
+        )
 
     thread_id = get_thread_id(config)
     slug = re.sub(r"[^A-Za-z0-9]+", "-", node["name"]).strip("-")[:40] or "file"
     filename = f"read_{slug}_{uuid.uuid4().hex[:6]}.txt"
     return await save_and_stub(
         thread_id, filename, node["extracted_text"], kind=f"read_file({path!r})"
+    )
+
+
+def _sandbox_name(name: str) -> str:
+    """A filename safe to write into the sandbox, extension intact.
+
+    The extension is load-bearing rather than cosmetic: pandas, openpyxl
+    and pypdf all dispatch on it, so a workbook that lands as `download`
+    is one the agent cannot open without first being told what it is.
+    """
+    # `\w` under Unicode keeps letters of any script, so a Vietnamese name
+    # stays readable instead of collapsing to `b_o_c_o.xlsx`; what goes is
+    # the path separators, whitespace and shell metacharacters. Stripping
+    # the leading `._-` then disposes of both `..` traversal and dotfiles.
+    cleaned = re.sub(r"[^\w.\-]+", "_", name, flags=re.UNICODE).strip("._-")
+    if not cleaned:
+        return "file"
+    if len(cleaned) <= _MAX_NAME_CHARS:
+        return cleaned
+    # Truncate the stem, never the extension — losing `.xlsx` off a long
+    # name would defeat the one thing this function is careful about.
+    stem, dot, ext = cleaned.rpartition(".")
+    if dot and len(ext) <= 12:
+        return f"{stem[: _MAX_NAME_CHARS - len(ext) - 1]}.{ext}"
+    return cleaned[:_MAX_NAME_CHARS]
+
+
+@tool
+async def fetch_file(path: str, config: RunnableConfig) -> str:
+    """Copy a file from the user's workspace into the bash sandbox, byte for byte.
+
+    Use this when the file's structure is the point and flattened text
+    will not do: a spreadsheet's sheets and cells, a PDF's tables and
+    layout, an image, anything you want to open with a library. The file
+    lands in your bash working directory under its own name, and from
+    there it is yours — pandas, openpyxl, pypdf, whatever fits.
+
+    When you only need the words out of a document, prefer `read_file`:
+    it hands you the text directly instead of costing you a second round
+    trip through bash.
+
+    Args:
+        path: Root-relative file path, e.g. "/reports/q3-2024.xlsx".
+    """
+    user_id = _user_id(config)
+    try:
+        node = await file_client.resolve_path(user_id, path)
+    except httpx.HTTPStatusError as e:
+        return f"Error: {e.response.text}"
+    if node is None:
+        return f"Error: not found: {path}"
+    if node["type"] != "file":
+        return f"Error: {path} is a folder, not a file"
+
+    size = node.get("size_bytes") or 0
+    if size > _MAX_FETCH_BYTES:
+        return (
+            f"Error: {path} is {_format_size(size)}, over the "
+            f"{_format_size(_MAX_FETCH_BYTES)} limit for copying into the sandbox."
+        )
+
+    try:
+        content, mime_type, _ = await file_client.get_content(user_id, node["id"])
+    except httpx.HTTPStatusError as e:
+        return f"Error: {e.response.text}"
+
+    name = _sandbox_name(node["name"])
+    try:
+        await sandbox_manager.write_file(get_thread_id(config), name, content)
+    except Exception as e:  # noqa: BLE001 — the sandbox can fail many ways; all of
+        # them mean the same thing to the model, and none should end the turn.
+        return f"Error: could not write {name} into the sandbox — {type(e).__name__}: {e}"
+
+    return (
+        f"Copied {path} into the bash sandbox as ./{name} "
+        f"({_format_size(len(content))}, {mime_type}). Open it with bash."
     )
 
 

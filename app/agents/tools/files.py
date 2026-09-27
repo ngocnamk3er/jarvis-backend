@@ -150,7 +150,8 @@ async def fetch_file(path: str, config: RunnableConfig) -> str:
     will not do: a spreadsheet's sheets and cells, a PDF's tables and
     layout, an image, anything you want to open with a library. The file
     lands in your bash working directory under its own name, and from
-    there it is yours — pandas, openpyxl, pypdf, whatever fits.
+    there it is yours: open it with `bash` and whatever library the
+    sandbox has.
 
     When you only need the words out of a document, prefer `read_file`:
     it hands you the text directly instead of costing you a second round
@@ -195,31 +196,16 @@ async def fetch_file(path: str, config: RunnableConfig) -> str:
 
 
 @tool
-async def grep_files(pattern: str, path: str, config: RunnableConfig) -> str:
-    """Keyword-search file names and contents under a path in the user's
-    file workspace (case-insensitive substring match). This is the
-    plain-text half of hybrid search — see search_files for the semantic half.
-
-    Args:
-        pattern: Text to search for.
-        path: Root-relative path to search under. Pass "/" to search the
-            whole workspace.
-    """
-    try:
-        results = await file_client.grep_files(_user_id(config), pattern, path)
-    except httpx.HTTPStatusError as e:
-        return f"Error: {e.response.text}"
-    if not results:
-        return f"No matches for '{pattern}' under {path}"
-    return "\n".join(f"{r['path']} ({_format_size(r['size_bytes'])})" for r in results)
-
-
-@tool
 async def search_files(query: str, top_k: int, config: RunnableConfig) -> str:
-    """Semantic search over the user's file workspace — finds relevant
-    content by meaning, not just literal keyword match (the plain-text half
-    is grep_files). Use this for "find files about X" style questions where
-    the exact wording in the file may differ from the query.
+    """Semantic search over the user's file workspace — the way to find
+    what the user has uploaded. Matches by meaning rather than by literal
+    wording, so it answers "the file about X" without needing the file's
+    name or its exact phrasing.
+
+    Pairs with `list_files`, which shows what is there by path when you
+    want to browse rather than search. `read_file` and `fetch_file` both
+    need a path — one of these results, one from a listing, or one the
+    user gave you.
 
     Args:
         query: Natural-language description of what to find.
@@ -233,7 +219,10 @@ async def search_files(query: str, top_k: int, config: RunnableConfig) -> str:
             results = await file_client.search_vector(_user_id(config), query, top_k)
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 400:
-            return "Semantic search isn't configured for this deployment — use grep_files instead."
+            return (
+                "Semantic search isn't configured for this deployment — browse with "
+                "list_files instead."
+            )
         return f"Error: {e.response.text}"
     if not results:
         return f"No semantic matches for '{query}'"

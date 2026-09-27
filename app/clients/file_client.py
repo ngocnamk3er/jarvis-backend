@@ -56,10 +56,6 @@ class FileNodeDetailDTO(FileNodeDTO):
     extracted_text: str | None = None
 
 
-class FileSearchResultDTO(FileNodeDTO):
-    path: str
-
-
 async def list_tree(user_id: str, path: str = "/") -> list[dict]:
     resp = await _get_client().get("/files/tree", params={"user_id": user_id, "path": path})
     resp.raise_for_status()
@@ -126,14 +122,6 @@ async def rename_or_move(
 async def delete_node(user_id: str, node_id: str) -> None:
     resp = await _get_client().delete(f"/files/nodes/{node_id}", params={"user_id": user_id})
     resp.raise_for_status()
-
-
-async def grep_files(user_id: str, query: str, path: str = "/") -> list[dict]:
-    resp = await _get_client().get(
-        "/files/search/grep", params={"user_id": user_id, "query": query, "path": path}
-    )
-    resp.raise_for_status()
-    return [FileSearchResultDTO(**n).model_dump() for n in resp.json()]
 
 
 async def rerank(query: str, documents: list[str], top_n: int | None = None) -> list[dict]:

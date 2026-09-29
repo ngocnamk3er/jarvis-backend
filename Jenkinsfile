@@ -6,6 +6,10 @@ pipeline {
     // socket), so "localhost" is correct here — this is NOT what the
     // manifests reference (they use host.minikube.internal).
     IMAGE = "localhost:5050/root/jarvis-backend"
+    // The Dockerfile's pip layer uses a cache mount, which the classic
+    // builder ignores silently — every build would re-download everything
+    // and nothing would say why.
+    DOCKER_BUILDKIT = "1"
   }
 
   stages {
@@ -25,7 +29,10 @@ pipeline {
 
     stage('Build image') {
       steps {
-        sh "docker build -t ${IMAGE}:${IMAGE_TAG} ."
+        // --network=host because Docker's bridge network on this host
+        // reaches PyPI at ~2.7 MB/min against ~11.3 MB/min on the host's
+        // own stack — measured on the same 17MB wheel, 6m20s vs 1m30s.
+        sh "docker build --network=host -t ${IMAGE}:${IMAGE_TAG} ."
       }
     }
 

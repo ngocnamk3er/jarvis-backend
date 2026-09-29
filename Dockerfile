@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -14,7 +15,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# A cache mount rather than --no-cache-dir: this layer is keyed on
+# requirements.txt, so adding a single package used to re-download all 122
+# of them. Measured 2026-09-26 — adding pypdf and python-docx cost a
+# 70-minute rebuild. The cache lives outside the image, so nothing here
+# grows it.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
 
 # generate_visualization_svg renders its output in headless Chromium before
 # returning it (see app/agents/tools/viz_validate.py) — same browser

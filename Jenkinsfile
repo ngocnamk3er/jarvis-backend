@@ -32,7 +32,15 @@ pipeline {
         // --network=host because Docker's bridge network on this host
         // reaches PyPI at ~2.7 MB/min against ~11.3 MB/min on the host's
         // own stack — measured on the same 17MB wheel, 6m20s vs 1m30s.
-        sh "docker build --network=host -t ${IMAGE}:${IMAGE_TAG} ."
+        // --provenance=false: BuildKit otherwise attaches a provenance
+        // attestation, which turns the image into an OCI index carrying a
+        // second, non-image manifest. `docker push` uploads the 15 real
+        // layers fine and then the registry rejects the index with
+        // MANIFEST_BLOB_UNKNOWN, because the attestation's blob never
+        // arrives. Verified by media type: a default BuildKit build is
+        // ...image.index.v1+json, with this flag it is ...image.manifest.v1+json,
+        // the same thing the classic builder produced here for months.
+        sh "docker build --network=host --provenance=false -t ${IMAGE}:${IMAGE_TAG} ."
       }
     }
 

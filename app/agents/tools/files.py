@@ -236,6 +236,14 @@ async def search_files(query: str, top_k: int, config: RunnableConfig) -> str:
             label = f"relevance={r['rerank_score']:.0f}/10, similarity={r['score']:.2f}"
         else:
             label = f"similarity={r['score']:.2f}"
+        # Page 0 means the format had no pagination to report (a .txt, a
+        # .docx), so say nothing rather than print a page that does not
+        # exist. The boxes that come back alongside are for a viewer to
+        # draw with and would only be noise here.
+        start, end = r.get("page_start", 0), r.get("page_end", 0)
+        if start:
+            page = f"p.{start}" if start == end else f"pp.{start}-{end}"
+            label = f"{page}, {label}"
         lines.append(f"{r['path']} ({label}):\n{r['chunk_text'][:300]}")
     body = "\n\n".join(lines)
     return f"[retrieval: {'; '.join(trace)}]\n\n{body}" if trace else body

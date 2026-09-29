@@ -42,6 +42,8 @@ def _replay_subagent_trace(trace: list[dict], task_tool_call_id: str) -> list[di
             tool = by_run_id.get(ev.get("run_id"))
             if tool:
                 tool["output"] = ev.get("output")
+                if ev.get("citations"):
+                    tool["citations"] = ev["citations"]
         elif ev["type"] == "todo_update":
             # write_todos replaces the whole list each call — keep updating
             # the same part in place rather than stacking a new one per call,
@@ -66,6 +68,16 @@ def serialize_messages(messages: list, subagent_traces: dict[str, list[dict]] | 
         msg.tool_call_id: str(msg.content)
         for msg in messages
         if isinstance(msg, ToolMessage)
+    }
+    # Citations live on the ToolMessage's artifact (see search_files), which
+    # the checkpoint keeps — so sources reappear on reload exactly as they
+    # streamed, without re-running the search.
+    tool_citations: dict[str, list] = {
+        msg.tool_call_id: msg.artifact["citations"]
+        for msg in messages
+        if isinstance(msg, ToolMessage)
+        and isinstance(getattr(msg, "artifact", None), dict)
+        and msg.artifact.get("citations")
     }
 
     result: list[dict] = []
@@ -150,6 +162,8 @@ def serialize_messages(messages: list, subagent_traces: dict[str, list[dict]] | 
                 }
                 if batch_id:
                     tool_part["parent_run_id"] = batch_id
+                if tc["id"] in tool_citations:
+                    tool_part["citations"] = tool_citations[tc["id"]]
                 pending_parts.append({"type": "tool", "tool": tool_part})
 
                 trace = subagent_traces.get(tc["id"])

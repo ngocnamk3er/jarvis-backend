@@ -195,8 +195,34 @@ async def fetch_file(path: str, config: RunnableConfig) -> str:
     )
 
 
-@tool
-async def search_files(query: str, top_k: int, config: RunnableConfig) -> str:
+def _citation(r: dict) -> dict:
+    """One hit, shaped for the frontend's source chips and viewer.
+
+    Everything a viewer needs to open the file and draw the highlight
+    without another round trip to the search index: which file, which
+    pages, the boxes (fractions of the page), and the char span into the
+    file's extracted text for formats that have no pages at all.
+    """
+    return {
+        "file_id": r["file_id"],
+        "path": r["path"],
+        "page_start": r.get("page_start", 0),
+        "page_end": r.get("page_end", 0),
+        "boxes": r.get("boxes", []),
+        "char_start": r.get("char_start", 0),
+        "char_end": r.get("char_end", 0),
+        "score": r.get("rerank_score", r.get("score")),
+        "snippet": r["chunk_text"][:240],
+    }
+
+
+# content_and_artifact: the string goes to the model, the artifact does not.
+# The artifact is where the citations ride — the frontend needs the boxes to
+# draw highlights, the model would only pay tokens for them. LangChain keeps
+# it on the ToolMessage, so it reaches the live SSE stream (tool_end) and
+# survives in the checkpoint for when the conversation is reloaded.
+@tool(response_format="content_and_artifact")
+async def search_files(query: str, top_k: int, config: RunnableConfig) -> tuple[str, dict | None]:
     """Semantic search over the user's file workspace — the way to find
     what the user has uploaded. Matches by meaning rather than by literal
     wording, so it answers "the file about X" without needing the file's
@@ -222,10 +248,10 @@ async def search_files(query: str, top_k: int, config: RunnableConfig) -> str:
             return (
                 "Semantic search isn't configured for this deployment — browse with "
                 "list_files instead."
-            )
-        return f"Error: {e.response.text}"
+            ), None
+        return f"Error: {e.response.text}", None
     if not results:
-        return f"No semantic matches for '{query}'"
+        return f"No semantic matches for '{query}'", None
 
     lines = []
     for r in results:
@@ -246,4 +272,5 @@ async def search_files(query: str, top_k: int, config: RunnableConfig) -> str:
             label = f"{page}, {label}"
         lines.append(f"{r['path']} ({label}):\n{r['chunk_text'][:300]}")
     body = "\n\n".join(lines)
-    return f"[retrieval: {'; '.join(trace)}]\n\n{body}" if trace else body
+    text = f"[retrieval: {'; '.join(trace)}]\n\n{body}" if trace else body
+    return text, {"citations": [_citation(r) for r in results]}

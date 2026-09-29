@@ -167,6 +167,14 @@ class ToolEndEventHandler:
                 start["task_run_id"] = task_run_id
             events.append(start)
         end: dict = {"type": "tool_end", "name": event["name"], "output": output, "run_id": event.get("run_id", "")}
+        # search_files hands its citations over as a ToolMessage artifact —
+        # structured data for the UI that never enters the model's context.
+        # Forwarded on the same event so the badge and its sources arrive
+        # together, and so a subagent's trace (saved as these raw payloads)
+        # keeps them for replay.
+        artifact = getattr(raw, "artifact", None)
+        if isinstance(artifact, dict) and artifact.get("citations"):
+            end["citations"] = artifact["citations"]
         if task_run_id:
             end["task_run_id"] = task_run_id
         events.append(end)

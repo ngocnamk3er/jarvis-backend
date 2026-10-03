@@ -195,6 +195,40 @@ async def fetch_file(path: str, config: RunnableConfig) -> str:
     )
 
 
+def _snippet(text: str, query: str, width: int = 300) -> str:
+    """A window of `text` centered on where `query` actually appears,
+    rather than always the start.
+
+    A chunk can span several pages when a short document collapses into
+    one chunk_words-sized chunk (see chunking.py) — the first `width`
+    chars then only cover the opening page, and an exact-match hit near
+    the end is invisible in the preview even though it is what matched.
+    A real trace on 2026-10-03 showed the model call search_files(exact=
+    True), get back a truncated preview that stopped short of the ID it
+    had just found, and spend a second round trip on read_file just to
+    see what search_files had already matched.
+
+    Falls back to the start when `query` is not found verbatim — e.g. an
+    ascii_folding match across a diacritic the plain text does not share,
+    or a non-phrase (any order) match whose words are scattered wider
+    than one window can show.
+    """
+    idx = text.lower().find(query.lower())
+    if idx == -1:
+        for word in query.split():
+            idx = text.lower().find(word.lower())
+            if idx != -1:
+                break
+    if idx == -1:
+        return text[:width]
+    start = max(0, min(idx - width // 3, len(text) - width))
+    start = max(0, start)
+    end = min(len(text), start + width)
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if end < len(text) else ""
+    return f"{prefix}{text[start:end]}{suffix}"
+
+
 def _citation(r: dict) -> dict:
     """One hit, shaped for the frontend's source chips and viewer.
 
@@ -292,7 +326,8 @@ async def search_files(
         if start:
             page = f"p.{start}" if start == end else f"pp.{start}-{end}"
             label = f"{page}, {label}"
-        lines.append(f"{r['path']} ({label}):\n{r['chunk_text'][:300]}")
+        preview = _snippet(r["chunk_text"], query, 300) if exact else r["chunk_text"][:300]
+        lines.append(f"{r['path']} ({label}):\n{preview}")
     body = "\n\n".join(lines)
     text = f"[retrieval: {'; '.join(trace)}]\n\n{body}" if trace else body
     return text, {"citations": [_citation(r) for r in results]}

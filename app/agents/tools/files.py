@@ -195,6 +195,16 @@ async def fetch_file(path: str, config: RunnableConfig) -> str:
     )
 
 
+def _window(text: str, idx: int, width: int = 300) -> str:
+    """A `width`-char window of `text` centered on position `idx`."""
+    start = max(0, min(idx - width // 3, len(text) - width))
+    start = max(0, start)
+    end = min(len(text), start + width)
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if end < len(text) else ""
+    return f"{prefix}{text[start:end]}{suffix}"
+
+
 def _snippet(text: str, query: str, width: int = 300) -> str:
     """A window of `text` centered on where `query` actually appears,
     rather than always the start.
@@ -211,7 +221,10 @@ def _snippet(text: str, query: str, width: int = 300) -> str:
     Falls back to the start when `query` is not found verbatim — e.g. an
     ascii_folding match across a diacritic the plain text does not share,
     or a non-phrase (any order) match whose words are scattered wider
-    than one window can show.
+    than one window can show. (search_hybrid's exact_char_start/end, used
+    for the non-exact path below, doesn't have this gap — file-service
+    folds before searching — so prefer that position when it's known
+    rather than re-deriving one here.)
     """
     idx = text.lower().find(query.lower())
     if idx == -1:
@@ -221,30 +234,52 @@ def _snippet(text: str, query: str, width: int = 300) -> str:
                 break
     if idx == -1:
         return text[:width]
-    start = max(0, min(idx - width // 3, len(text) - width))
-    start = max(0, start)
-    end = min(len(text), start + width)
-    prefix = "…" if start > 0 else ""
-    suffix = "…" if end < len(text) else ""
-    return f"{prefix}{text[start:end]}{suffix}"
+    return _window(text, idx, width)
 
 
-def _citation(r: dict) -> dict:
+def _citation(r: dict, exact: bool = False) -> dict:
     """One hit, shaped for the frontend's source chips and viewer.
 
     Everything a viewer needs to open the file and draw the highlight
     without another round trip to the search index: which file, which
     pages, the boxes (fractions of the page), and the char span into the
     file's extracted text for formats that have no pages at all.
+
+    Two highlight ranges, not one — `boxes`/`char_start`/`char_end` (drawn
+    one color, "relevant by meaning") and `exact_boxes`/`exact_char_start`/
+    `exact_char_end` (drawn another, "relevant by literal wording"),
+    always nested inside the first when both are present (exact_char_*
+    is found *within* the chunk char_start/char_end already covers — see
+    vector_store._locate_exact_match in jarvis-file-service). A viewer can
+    show both at once instead of picking one explanation for the hit.
+
+    exact=True inverts which range is populated: search_fulltext already
+    narrowed its own boxes/char_start/char_end down to the literal match
+    (there is no separate "whole chunk" extent for exact search — the
+    narrowed span *is* the point), so that narrowed span rides as the
+    exact_* fields instead, and the semantic fields stay empty rather
+    than duplicating it under two names.
     """
+    if exact:
+        boxes, exact_boxes = [], r.get("boxes", [])
+        char_start, char_end = 0, 0
+        exact_char_start, exact_char_end = r.get("char_start", 0), r.get("char_end", 0)
+    else:
+        boxes, exact_boxes = r.get("boxes", []), r.get("exact_boxes", [])
+        char_start, char_end = r.get("char_start", 0), r.get("char_end", 0)
+        exact_char_start = r.get("exact_char_start", 0)
+        exact_char_end = r.get("exact_char_end", 0)
     return {
         "file_id": r["file_id"],
         "path": r["path"],
         "page_start": r.get("page_start", 0),
         "page_end": r.get("page_end", 0),
-        "boxes": r.get("boxes", []),
-        "char_start": r.get("char_start", 0),
-        "char_end": r.get("char_end", 0),
+        "boxes": boxes,
+        "exact_boxes": exact_boxes,
+        "char_start": char_start,
+        "char_end": char_end,
+        "exact_char_start": exact_char_start,
+        "exact_char_end": exact_char_end,
         "score": r.get("rerank_score", r.get("score")),
         "snippet": r["chunk_text"][:240],
     }
@@ -306,18 +341,26 @@ async def search_files(
 
     lines = []
     for r in results:
+        has_exact = r.get("exact_char_end", 0) > r.get("exact_char_start", 0)
         # exact search has no score of its own (see search_fulltext) —
         # saying "similarity=1.00" would claim a measurement that was
         # never taken. rerank_score is absent when agentic retrieval is
         # off or fell back to plain vector search, so report whichever
         # ranking actually applied rather than implying a judgement that
-        # never happened.
+        # never happened. The plain-score case is now an RRF-fused score
+        # (search_hybrid, small — typically 0.01-0.03), not a cosine
+        # similarity, so it's labeled "relevance" rather than
+        # "similarity" to avoid implying a 0-1 scale that isn't there.
         if exact:
             label = "exact match"
         elif "rerank_score" in r:
             label = f"relevance={r['rerank_score']:.0f}/10, similarity={r['score']:.2f}"
+            if has_exact:
+                label += ", also an exact match"
         else:
-            label = f"similarity={r['score']:.2f}"
+            label = f"relevance={r['score']:.3f}"
+            if has_exact:
+                label += ", also an exact match"
         # Page 0 means the format had no pagination to report (a .txt, a
         # .docx), so say nothing rather than print a page that does not
         # exist. The boxes that come back alongside are for a viewer to
@@ -326,8 +369,17 @@ async def search_files(
         if start:
             page = f"p.{start}" if start == end else f"pp.{start}-{end}"
             label = f"{page}, {label}"
-        preview = _snippet(r["chunk_text"], query, 300) if exact else r["chunk_text"][:300]
+        if exact:
+            preview = _snippet(r["chunk_text"], query, 300)
+        elif has_exact:
+            # search_hybrid already found exactly where query_text sits
+            # (folded, unlike _snippet's own search below) — center on
+            # that known position instead of re-searching for it.
+            local_idx = r["exact_char_start"] - r.get("char_start", 0)
+            preview = _window(r["chunk_text"], local_idx, 300)
+        else:
+            preview = r["chunk_text"][:300]
         lines.append(f"{r['path']} ({label}):\n{preview}")
     body = "\n\n".join(lines)
     text = f"[retrieval: {'; '.join(trace)}]\n\n{body}" if trace else body
-    return text, {"citations": [_citation(r) for r in results]}
+    return text, {"citations": [_citation(r, exact) for r in results]}

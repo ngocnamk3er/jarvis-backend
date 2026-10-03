@@ -142,3 +142,14 @@ async def search_vector(user_id: str, query: str, top_k: int = 5) -> list[dict]:
     )
     resp.raise_for_status()
     return resp.json()
+
+
+async def search_fulltext(
+    user_id: str, query: str, top_k: int = 5, phrase: bool = True
+) -> list[dict]:
+    resp = await _get_client().post(
+        "/files/search/fulltext",
+        json={"user_id": user_id, "query": query, "top_k": top_k, "phrase": phrase},
+    )
+    resp.raise_for_status()
+    return resp.json()

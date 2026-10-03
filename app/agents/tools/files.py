@@ -222,11 +222,22 @@ def _citation(r: dict) -> dict:
 # it on the ToolMessage, so it reaches the live SSE stream (tool_end) and
 # survives in the checkpoint for when the conversation is reloaded.
 @tool(response_format="content_and_artifact")
-async def search_files(query: str, top_k: int, config: RunnableConfig) -> tuple[str, dict | None]:
-    """Semantic search over the user's file workspace — the way to find
-    what the user has uploaded. Matches by meaning rather than by literal
-    wording, so it answers "the file about X" without needing the file's
-    name or its exact phrasing.
+async def search_files(
+    query: str, config: RunnableConfig, top_k: int = 5, exact: bool = False
+) -> tuple[str, dict | None]:
+    """Search the user's file workspace — the way to find what the user
+    has uploaded. Two modes:
+
+    - exact=False (default): semantic search. Matches by meaning, so it
+      answers "the file about X" without needing the file's name or its
+      exact wording.
+    - exact=True: exact-phrase search over the same indexed chunks — the
+      words adjacent, in the order given. Use this for a code, an ID, a
+      name, or a quoted string, where it is the literal wording that
+      matters — a query like "the invoice about late fees" would not
+      find invoice number INV-2024-0871 that way, but the number itself
+      will. Still needs real words to match on; it is not a filename or
+      path lookup (use list_files for that).
 
     Pairs with `list_files`, which shows what is there by path when you
     want to browse rather than search. `read_file` and `fetch_file` both
@@ -234,15 +245,20 @@ async def search_files(query: str, top_k: int, config: RunnableConfig) -> tuple[
     user gave you.
 
     Args:
-        query: Natural-language description of what to find.
+        query: What to find — a natural-language description (exact=False)
+            or the exact text to match (exact=True).
         top_k: Max number of chunks to return — 5 is a reasonable default.
+        exact: True for exact-phrase matching instead of semantic search.
     """
+    user_id = _user_id(config)
     trace: list[str] = []
     try:
-        if retrieval.enabled():
-            results, trace = await retrieval.agentic_search(_user_id(config), query, top_k)
+        if exact:
+            results = await file_client.search_fulltext(user_id, query, top_k)
+        elif retrieval.enabled():
+            results, trace = await retrieval.agentic_search(user_id, query, top_k)
         else:
-            results = await file_client.search_vector(_user_id(config), query, top_k)
+            results = await file_client.search_vector(user_id, query, top_k)
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 400:
             return (
@@ -251,14 +267,20 @@ async def search_files(query: str, top_k: int, config: RunnableConfig) -> tuple[
             ), None
         return f"Error: {e.response.text}", None
     if not results:
-        return f"No semantic matches for '{query}'", None
+        kind = "exact matches" if exact else "semantic matches"
+        return f"No {kind} for '{query}'", None
 
     lines = []
     for r in results:
-        # rerank_score is absent when agentic retrieval is off or fell back to
-        # plain vector search, so report whichever ranking actually applied
-        # rather than implying a judgement that never happened.
-        if "rerank_score" in r:
+        # exact search has no score of its own (see search_fulltext) —
+        # saying "similarity=1.00" would claim a measurement that was
+        # never taken. rerank_score is absent when agentic retrieval is
+        # off or fell back to plain vector search, so report whichever
+        # ranking actually applied rather than implying a judgement that
+        # never happened.
+        if exact:
+            label = "exact match"
+        elif "rerank_score" in r:
             label = f"relevance={r['rerank_score']:.0f}/10, similarity={r['score']:.2f}"
         else:
             label = f"similarity={r['score']:.2f}"

@@ -53,8 +53,10 @@ is exactly what you saved it as (a plain relative name like `report.docx`).
 Files the user uploaded live in a persistent workspace, separate from your
 sandbox. `search_files` finds them by meaning and `list_files` shows what
 sits at a path; between them that is how you learn what is in there, so
-start with one unless the user handed you a path. Then pick how to open
-what you found:
+start with one unless the user handed you a path. `search_files` matches by
+meaning by default — pass `exact=True` for a code, an ID, or a name where
+the exact wording is what matters and a paraphrase would miss it. Then pick
+how to open what you found:
 - `read_file` — the document's text, straight back to you. Right for
   anything you only need to read words out of.
 - `fetch_file` — the file itself, copied into your bash working directory.

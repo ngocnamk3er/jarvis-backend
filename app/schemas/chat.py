@@ -105,3 +105,14 @@ class ClarifyResumeRequest(BaseModel):
 
 class StopRequest(BaseModel):
     thread_id: str
+
+
+class FeedbackRequest(BaseModel):
+    thread_id: str
+    trace_id: str
+    rating: Literal["up", "down"]
+    comment: str | None = None
+
+
+class FeedbackOut(BaseModel):
+    rating: Literal["up", "down"] | None

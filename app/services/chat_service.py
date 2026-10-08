@@ -1,6 +1,7 @@
 import asyncio
 import json
-from langchain_core.messages import HumanMessage
+import logging
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
 from app.agents.middleware import TOOL_CALL_LIMIT_EVENT
@@ -8,6 +9,8 @@ from app.agents.tools.sandbox_manager import reset as reset_sandbox
 from app.clients import conversation_client
 from app.core import observability
 from app.schemas.chat import AVAILABLE_MODELS
+
+logger = logging.getLogger(__name__)
 
 # Looked up in stream() before touching the graph at all — refuses a new
 # user-initiated turn once the conversation's last-known context_tokens
@@ -401,13 +404,27 @@ class ChatService:
         last_context_tokens: int | None = None
         stopped = False
 
+        # Generated and sent before the run has produced anything, not read
+        # back from Langfuse afterward — trace_as() (below) pins the actual
+        # trace to this exact id, so the frontend already has what
+        # create_score() needs to attach feedback (thumbs up/down) the
+        # instant this message exists, not after a round trip to ask
+        # Langfuse what id it picked. See app/core/observability.py.
+        trace_id = observability.new_trace_id()
+        yield f"data: {json.dumps({'type': 'trace_id', 'trace_id': trace_id})}\n\n"
+
         queue: asyncio.Queue = asyncio.Queue()
         _DONE = object()
 
         async def _drive():
             try:
-                async for ev in graph.astream_events(graph_input, config=config, version="v2"):
-                    await queue.put(ev)
+                # A plain `with`, not `async with` — verified live against
+                # the installed SDK: trace_as's underlying context manager
+                # only supports the sync protocol, even though everything
+                # inside this block is async. See trace_as's docstring.
+                with observability.trace_as(trace_id):
+                    async for ev in graph.astream_events(graph_input, config=config, version="v2"):
+                        await queue.put(ev)
             finally:
                 await queue.put(_DONE)
 
@@ -479,6 +496,23 @@ class ChatService:
                 # After normal stream completion check for a pending HITL interrupt
                 state = await graph.aget_state(config)
                 hitl_lines = _extract_hitl_events(state)
+
+                # Lets the message-feedback control survive a reload — the
+                # live SSE trace_id event above already covers the message
+                # while it's still on screen; conversation_service.py reads
+                # this back the same way it already reads additional_kwargs
+                # for other per-message extras (see serialize_messages).
+                # Best-effort: a save failure here shouldn't break an
+                # otherwise-successful turn, just mean feedback isn't
+                # available for this one message after a reload.
+                messages = state.values.get("messages", [])
+                if messages and isinstance(messages[-1], AIMessage) and messages[-1].id:
+                    try:
+                        await conversation_client.save_message_trace(
+                            thread_id, messages[-1].id, trace_id
+                        )
+                    except Exception:
+                        logger.warning("could not save message trace", exc_info=True)
 
                 if last_context_tokens is not None:
                     await conversation_client.set_context_tokens(thread_id, last_context_tokens)

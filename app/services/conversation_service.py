@@ -62,8 +62,13 @@ def _replay_subagent_trace(trace: list[dict], task_tool_call_id: str) -> list[di
     return parts
 
 
-def serialize_messages(messages: list, subagent_traces: dict[str, list[dict]] | None = None) -> list[dict]:
+def serialize_messages(
+    messages: list,
+    subagent_traces: dict[str, list[dict]] | None = None,
+    message_traces: dict[str, str] | None = None,
+) -> list[dict]:
     subagent_traces = subagent_traces or {}
+    message_traces = message_traces or {}
     tool_outputs: dict[str, str] = {
         msg.tool_call_id: str(msg.content)
         for msg in messages
@@ -84,17 +89,25 @@ def serialize_messages(messages: list, subagent_traces: dict[str, list[dict]] | 
     pending_parts: list[dict] = []
     pending_usage_calls: list[dict] = []
     todos_part: dict | None = None  # this turn's own todos part, updated in place — see write_todos below
+    # The id chat_service.py saved a trace under for this turn's final
+    # AIMessage (see save_message_trace) — set on every AIMessage below so
+    # it ends up holding the *last* one by the time flush() fires, same
+    # message chat_service.py itself keyed the save on.
+    pending_trace_id: str | None = None
 
     def flush():
-        nonlocal todos_part
+        nonlocal todos_part, pending_trace_id
         if pending_parts:
             entry: dict = {"role": "assistant", "parts": list(pending_parts)}
             if pending_usage_calls:
                 entry["usage"] = list(pending_usage_calls)
+            if pending_trace_id:
+                entry["trace_id"] = pending_trace_id
             result.append(entry)
             pending_parts.clear()
         pending_usage_calls.clear()
         todos_part = None
+        pending_trace_id = None
 
     for msg in messages:
         if isinstance(msg, HumanMessage):
@@ -113,6 +126,9 @@ def serialize_messages(messages: list, subagent_traces: dict[str, list[dict]] | 
                 }
             )
         elif isinstance(msg, AIMessage):
+            msg_trace_id = message_traces.get(msg.id) if msg.id else None
+            if msg_trace_id:
+                pending_trace_id = msg_trace_id
             reasoning = msg.additional_kwargs.get("reasoning", "")
             if reasoning:
                 pending_parts.append({"type": "thinking", "content": reasoning, "isStreaming": False})
@@ -207,7 +223,8 @@ async def get_messages(graph, conversation_id: str, user_id: str) -> dict:
     state = await graph.aget_state(config)
     messages = state.values.get("messages", []) if state.values else []
     subagent_traces = await conversation_client.get_subagent_traces(conversation_id)
+    message_traces = await conversation_client.get_message_traces(conversation_id)
     return {
-        "messages": serialize_messages(messages, subagent_traces),
+        "messages": serialize_messages(messages, subagent_traces, message_traces),
         "is_pending": bool(state.next),
     }

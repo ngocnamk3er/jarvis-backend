@@ -124,3 +124,17 @@ async def get_subagent_traces(conversation_id: str) -> dict[str, list[dict]]:
     resp = await _get_client().get(f"/conversations/{conversation_id}/subagent-traces")
     resp.raise_for_status()
     return resp.json()
+
+
+async def save_message_trace(conversation_id: str, message_id: str, trace_id: str) -> None:
+    resp = await _get_client().put(
+        f"/conversations/{conversation_id}/message-traces/{message_id}",
+        json={"trace_id": trace_id},
+    )
+    resp.raise_for_status()
+
+
+async def get_message_traces(conversation_id: str) -> dict[str, str]:
+    resp = await _get_client().get(f"/conversations/{conversation_id}/message-traces")
+    resp.raise_for_status()
+    return resp.json()

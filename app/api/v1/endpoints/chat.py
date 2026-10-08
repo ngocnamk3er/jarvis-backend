@@ -7,10 +7,13 @@ from k8s_agent_sandbox.exceptions import SandboxRequestError
 from app.agents.tools import sandbox_manager
 from app.api.deps import CurrentUser, get_current_user
 from app.clients import conversation_client
+from app.core import observability
 from app.schemas.chat import (
     AVAILABLE_MODELS,
     ChatRequest,
     ClarifyResumeRequest,
+    FeedbackOut,
+    FeedbackRequest,
     ResumeRequest,
     StopRequest,
 )
@@ -132,3 +135,27 @@ async def chat_resume_clarify(
         ),
         media_type="text/event-stream",
     )
+
+
+@router.post("/feedback")
+async def submit_feedback(
+    request: FeedbackRequest, user: CurrentUser = Depends(get_current_user)
+):
+    """Thumbs up/down (plus an optional comment) on one assistant message,
+    identified by the Langfuse trace recorded while generating it — see
+    app/core/observability.py. thread_id is only here to check ownership,
+    the same way every other endpoint on this router scopes a request to a
+    conversation the caller actually owns."""
+    await _check_owns_thread(request.thread_id, user)
+    try:
+        observability.create_score(request.trace_id, request.rating, request.comment)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}
+
+
+@router.get("/feedback", response_model=FeedbackOut)
+async def get_feedback(thread_id: str, trace_id: str, user: CurrentUser = Depends(get_current_user)):
+    await _check_owns_thread(thread_id, user)
+    score = await observability.get_score(trace_id)
+    return {"rating": score["rating"] if score else None}

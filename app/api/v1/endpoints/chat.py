@@ -158,4 +158,4 @@ async def submit_feedback(
 async def get_feedback(thread_id: str, trace_id: str, user: CurrentUser = Depends(get_current_user)):
     await _check_owns_thread(thread_id, user)
     score = await observability.get_score(trace_id)
-    return {"rating": score["rating"] if score else None}
+    return {"rating": score["rating"] if score else None, "comment": score["comment"] if score else None}

@@ -116,3 +116,4 @@ class FeedbackRequest(BaseModel):
 
 class FeedbackOut(BaseModel):
     rating: Literal["up", "down"] | None
+    comment: str | None = None

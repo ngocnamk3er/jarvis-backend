@@ -174,13 +174,21 @@ def create_score(trace_id: str, rating: Literal["up", "down"], comment: str | No
 
 
 async def get_score(trace_id: str) -> dict | None:
-    """The user-feedback rating already recorded for `trace_id`, or None
-    if nobody has voted on it (yet, or at all) — lets the frontend
-    restore "you already rated this" after a reload.
+    """The user-feedback rating (and comment, if any) already recorded for
+    `trace_id`, or None if nobody has voted on it (yet, or at all) — lets
+    the frontend restore "you already rated this" (and what was said)
+    after a reload.
 
     No SDK method reads scores back (confirmed against the installed
     client: create_score has no read counterpart), so this is a direct
     REST call against the same credentials init_tracing() already holds.
+
+    `fields=details` is required to get `comment` back at all — without
+    it the response omits comment/metadata/configId entirely (confirmed
+    against this deployment's own OpenAPI spec, /generated/api/openapi.yml:
+    "Present when 'details' is included in the fields parameter" — not a
+    events_only-mode limitation the way the legacy v2 endpoint's absence
+    is, just an easy-to-miss opt-in param).
 
     Ingestion lag is real here — verified live, newly-created scores
     took several seconds to become visible to this same endpoint in this
@@ -197,11 +205,11 @@ async def get_score(trace_id: str) -> dict | None:
         resp = await client.get(
             f"{settings.LANGFUSE_HOST}/api/public/v3/scores",
             headers={"Authorization": f"Basic {auth}"},
-            params={"traceId": trace_id, "name": "user-feedback"},
+            params={"traceId": trace_id, "name": "user-feedback", "fields": "details"},
             timeout=10.0,
         )
     resp.raise_for_status()
     data = resp.json()["data"]
     if not data:
         return None
-    return {"rating": "up" if data[0]["value"] else "down"}
+    return {"rating": "up" if data[0]["value"] else "down", "comment": data[0].get("comment")}

@@ -16,12 +16,9 @@ Off unless LANGFUSE_HOST and both keys are set, so local runs and tests
 need no server.
 """
 
-import base64
 import contextlib
 import logging
 from typing import Literal
-
-import httpx
 
 from app.core.config import settings
 
@@ -144,72 +141,36 @@ def trace_as(trace_id: str):
 
 
 def create_score(trace_id: str, rating: Literal["up", "down"], comment: str | None) -> None:
-    """Records a thumbs up/down (plus an optional free-text comment) on
-    `trace_id` as a Langfuse Score — reusing Langfuse's own feedback
-    primitive instead of a bespoke Postgres table, since the trace being
-    scored already lives there.
+    """Mirrors a thumbs up/down (plus an optional free-text comment) on
+    `trace_id` into Langfuse as a Score, purely so feedback is visible
+    there alongside the trace it's about.
+
+    Not the source of truth — app/db/feedback_repository.py's Postgres
+    table is (see its own module docstring for why: self-hosted Langfuse's
+    ingestion queue delays every write by a hardcoded, unconfigurable ~5s
+    before it's queryable, confirmed live, which made a vote vanish on an
+    immediate page reload). Best-effort and silent on failure, same
+    degrade-to-nothing posture as the rest of this module — a failure
+    here must never block the caller, since the Postgres write already
+    made the feedback durable and queryable.
 
     score_id is deterministic (derived from trace_id), not left for
     Langfuse to auto-generate — verified live: without a fixed id, a
     changed vote creates a second score row instead of replacing the
     first. One fixed id per trace makes a re-vote a true upsert.
-
-    Raises when tracing isn't configured — unlike tracing itself, which
-    degrades to a silent no-op throughout this module, feedback with
-    nowhere to actually go is a real failure for the caller (the chat
-    endpoint turns this into a 400), not something to swallow.
     """
     if _handler is None:
-        raise RuntimeError("Langfuse is not configured — feedback cannot be recorded")
-    from langfuse import get_client
+        return
+    try:
+        from langfuse import get_client
 
-    get_client().create_score(
-        name="user-feedback",
-        value=1 if rating == "up" else 0,
-        trace_id=trace_id,
-        data_type="BOOLEAN",
-        score_id=f"user-feedback-{trace_id}",
-        comment=comment,
-    )
-
-
-async def get_score(trace_id: str) -> dict | None:
-    """The user-feedback rating (and comment, if any) already recorded for
-    `trace_id`, or None if nobody has voted on it (yet, or at all) — lets
-    the frontend restore "you already rated this" (and what was said)
-    after a reload.
-
-    No SDK method reads scores back (confirmed against the installed
-    client: create_score has no read counterpart), so this is a direct
-    REST call against the same credentials init_tracing() already holds.
-
-    `fields=details` is required to get `comment` back at all — without
-    it the response omits comment/metadata/configId entirely (confirmed
-    against this deployment's own OpenAPI spec, /generated/api/openapi.yml:
-    "Present when 'details' is included in the fields parameter" — not a
-    events_only-mode limitation the way the legacy v2 endpoint's absence
-    is, just an easy-to-miss opt-in param).
-
-    Ingestion lag is real here — verified live, newly-created scores
-    took several seconds to become visible to this same endpoint in this
-    deployment's events_only mode. Callers that just wrote a score
-    should update their own UI state optimistically rather than re-fetch
-    to confirm; this function is for state that's had time to settle.
-    """
-    if _handler is None:
-        return None
-    auth = base64.b64encode(
-        f"{settings.LANGFUSE_PUBLIC_KEY}:{settings.LANGFUSE_SECRET_KEY}".encode()
-    ).decode()
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{settings.LANGFUSE_HOST}/api/public/v3/scores",
-            headers={"Authorization": f"Basic {auth}"},
-            params={"traceId": trace_id, "name": "user-feedback", "fields": "details"},
-            timeout=10.0,
+        get_client().create_score(
+            name="user-feedback",
+            value=1 if rating == "up" else 0,
+            trace_id=trace_id,
+            data_type="BOOLEAN",
+            score_id=f"user-feedback-{trace_id}",
+            comment=comment,
         )
-    resp.raise_for_status()
-    data = resp.json()["data"]
-    if not data:
-        return None
-    return {"rating": "up" if data[0]["value"] else "down", "comment": data[0].get("comment")}
+    except Exception:
+        logger.warning("could not mirror feedback score to langfuse", exc_info=True)

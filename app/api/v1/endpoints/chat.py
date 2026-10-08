@@ -8,6 +8,7 @@ from app.agents.tools import sandbox_manager
 from app.api.deps import CurrentUser, get_current_user
 from app.clients import conversation_client
 from app.core import observability
+from app.db import feedback_repository
 from app.schemas.chat import (
     AVAILABLE_MODELS,
     ChatRequest,
@@ -142,20 +143,21 @@ async def submit_feedback(
     request: FeedbackRequest, user: CurrentUser = Depends(get_current_user)
 ):
     """Thumbs up/down (plus an optional comment) on one assistant message,
-    identified by the Langfuse trace recorded while generating it — see
-    app/core/observability.py. thread_id is only here to check ownership,
-    the same way every other endpoint on this router scopes a request to a
-    conversation the caller actually owns."""
+    identified by the trace recorded while generating it. thread_id is only
+    here to check ownership, the same way every other endpoint on this
+    router scopes a request to a conversation the caller actually owns.
+
+    Postgres (feedback_repository) is the source of truth — read-your-own-
+    write, no lag. The Langfuse mirror (observability.create_score) is
+    best-effort and never raises; see its docstring for why."""
     await _check_owns_thread(request.thread_id, user)
-    try:
-        observability.create_score(request.trace_id, request.rating, request.comment)
-    except RuntimeError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    await feedback_repository.save_feedback(request.trace_id, request.rating, request.comment)
+    observability.create_score(request.trace_id, request.rating, request.comment)
     return {"ok": True}
 
 
 @router.get("/feedback", response_model=FeedbackOut)
 async def get_feedback(thread_id: str, trace_id: str, user: CurrentUser = Depends(get_current_user)):
     await _check_owns_thread(thread_id, user)
-    score = await observability.get_score(trace_id)
-    return {"rating": score["rating"] if score else None, "comment": score["comment"] if score else None}
+    feedback = await feedback_repository.get_feedback(trace_id)
+    return {"rating": feedback["rating"] if feedback else None, "comment": feedback["comment"] if feedback else None}

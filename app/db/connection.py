@@ -63,6 +63,25 @@ async def init_db() -> AsyncPostgresSaver:
     store = AsyncPostgresStore(pool)
     await store.setup()
 
+    # Message feedback (thumbs up/down + comment) — the read side used to be
+    # Langfuse's own Score API, but self-hosted Langfuse's ingestion queue
+    # delays every write by a hardcoded 5s before it's queryable (confirmed
+    # live, not configurable), which made a vote vanish on an immediate page
+    # reload. This table is the fast, read-your-own-write source of truth;
+    # app/core/observability.create_score() still mirrors writes to Langfuse
+    # best-effort, purely so feedback is still visible there for analysis.
+    async with pool.connection() as conn:
+        await conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {SCHEMA}.message_feedback (
+                trace_id TEXT PRIMARY KEY,
+                rating TEXT NOT NULL CHECK (rating IN ('up', 'down')),
+                comment TEXT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+
     return checkpointer
 
 

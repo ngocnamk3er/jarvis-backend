@@ -1,15 +1,15 @@
 from typing import Literal
 
-from app.db.connection import SCHEMA, pool
+from app.db import connection
 
 
 async def save_feedback(trace_id: str, rating: Literal["up", "down"], comment: str | None) -> None:
-    if pool is None:
+    if connection.pool is None:
         raise RuntimeError("Database not initialised")
-    async with pool.connection() as conn:
+    async with connection.pool.connection() as conn:
         await conn.execute(
             f"""
-            INSERT INTO {SCHEMA}.message_feedback (trace_id, rating, comment, updated_at)
+            INSERT INTO {connection.SCHEMA}.message_feedback (trace_id, rating, comment, updated_at)
             VALUES (%s, %s, %s, now())
             ON CONFLICT (trace_id) DO UPDATE
             SET rating = EXCLUDED.rating, comment = EXCLUDED.comment, updated_at = EXCLUDED.updated_at
@@ -19,12 +19,12 @@ async def save_feedback(trace_id: str, rating: Literal["up", "down"], comment: s
 
 
 async def get_feedback(trace_id: str) -> dict | None:
-    if pool is None:
+    if connection.pool is None:
         raise RuntimeError("Database not initialised")
-    async with pool.connection() as conn:
+    async with connection.pool.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                f"SELECT rating, comment FROM {SCHEMA}.message_feedback WHERE trace_id = %s",
+                f"SELECT rating, comment FROM {connection.SCHEMA}.message_feedback WHERE trace_id = %s",
                 (trace_id,),
             )
             row = await cur.fetchone()

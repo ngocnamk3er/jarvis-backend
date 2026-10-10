@@ -403,10 +403,6 @@ class ChatService:
         # last one reflects the fullest/most current view of the thread.
         last_context_tokens: int | None = None
         stopped = False
-        # TEMP: reproducing ERR_INCOMPLETE_CHUNKED_ENCODING against the real
-        # ingress (proxy-read-timeout=300s) — delay the 10th token past that
-        # so nginx kills the connection before it's sent. Remove after.
-        _token_count = 0
 
         # Generated and sent before the run has produced anything, not read
         # back from Langfuse afterward — trace_as() (below) pins the actual
@@ -485,10 +481,6 @@ class ChatService:
 
                 if results:
                     for data in results:
-                        if data.get("type") == "token":
-                            _token_count += 1
-                            if _token_count == 10:
-                                await asyncio.sleep(320)
                         yield f"data: {json.dumps(data)}\n\n"
 
             # _drive already finished (put _DONE) by this point, but its task

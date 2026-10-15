@@ -3,6 +3,7 @@ from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
 from app.agents.tools.sandbox_manager import reset as reset_sandbox
 from app.clients import conversation_client
+from app.db import feedback_repository
 
 
 async def _get_owned_conversation(conversation_id: str, user_id: str):
@@ -66,9 +67,11 @@ def serialize_messages(
     messages: list,
     subagent_traces: dict[str, list[dict]] | None = None,
     message_traces: dict[str, str] | None = None,
+    feedback_by_trace: dict[str, dict] | None = None,
 ) -> list[dict]:
     subagent_traces = subagent_traces or {}
     message_traces = message_traces or {}
+    feedback_by_trace = feedback_by_trace or {}
     tool_outputs: dict[str, str] = {
         msg.tool_call_id: str(msg.content)
         for msg in messages
@@ -103,6 +106,10 @@ def serialize_messages(
                 entry["usage"] = list(pending_usage_calls)
             if pending_trace_id:
                 entry["trace_id"] = pending_trace_id
+                fb = feedback_by_trace.get(pending_trace_id)
+                if fb:
+                    entry["rating"] = fb["rating"]
+                    entry["comment"] = fb["comment"]
             result.append(entry)
             pending_parts.clear()
         pending_usage_calls.clear()
@@ -224,7 +231,8 @@ async def get_messages(graph, conversation_id: str, user_id: str) -> dict:
     messages = state.values.get("messages", []) if state.values else []
     subagent_traces = await conversation_client.get_subagent_traces(conversation_id)
     message_traces = await conversation_client.get_message_traces(conversation_id)
+    feedback_by_trace = await feedback_repository.get_feedback_bulk(list(message_traces.values()))
     return {
-        "messages": serialize_messages(messages, subagent_traces, message_traces),
+        "messages": serialize_messages(messages, subagent_traces, message_traces, feedback_by_trace),
         "is_pending": bool(state.next),
     }

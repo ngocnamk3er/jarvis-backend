@@ -31,3 +31,21 @@ async def get_feedback(trace_id: str) -> dict | None:
     if row is None:
         return None
     return {"rating": row[0], "comment": row[1]}
+
+
+async def get_feedback_bulk(trace_ids: list[str]) -> dict[str, dict]:
+    """Keyed by trace_id — lets callers attach feedback to many messages in
+    one round trip instead of one get_feedback() call per message."""
+    if not trace_ids:
+        return {}
+    if connection.pool is None:
+        raise RuntimeError("Database not initialised")
+    async with connection.pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT trace_id, rating, comment FROM {connection.SCHEMA}.message_feedback "
+                "WHERE trace_id = ANY(%s)",
+                (trace_ids,),
+            )
+            rows = await cur.fetchall()
+    return {row[0]: {"rating": row[1], "comment": row[2]} for row in rows}

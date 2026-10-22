@@ -147,6 +147,14 @@ def get_thread_id(config) -> str:
     return config.get("configurable", {}).get("thread_id", "default")
 
 
+def has_sandbox(config) -> bool:
+    """Whether this run has a sandbox behind it. False only for a run that sets
+    `sandbox: False` in its configurable (the background research task, which
+    has no `bash`), so tools that would park a big result in the sandbox know to
+    cut it instead."""
+    return config.get("configurable", {}).get("sandbox", True)
+
+
 def normalize_workspace_path(path: str) -> str:
     """Fold the ways the agent refers to a file down to one relative name.
 

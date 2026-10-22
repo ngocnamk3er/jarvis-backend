@@ -5,7 +5,7 @@ from langchain_core.tools import tool
 from tavily import AsyncTavilyClient
 
 from app.agents.messages import WebSearchMsg
-from app.agents.tools.sandbox_manager import get_thread_id
+from app.agents.tools.sandbox_manager import get_thread_id, has_sandbox
 from app.agents.tools.sandbox_save import save_and_stub
 from app.core.config import settings
 
@@ -48,4 +48,6 @@ async def web_search(query: str, label: str, config: RunnableConfig) -> str:
 
     thread_id = get_thread_id(config)
     filename = f"search_{uuid.uuid4().hex[:6]}.md"
-    return await save_and_stub(thread_id, filename, text, kind=f"web_search({query!r})")
+    return await save_and_stub(
+        thread_id, filename, text, kind=f"web_search({query!r})", sandbox=has_sandbox(config)
+    )

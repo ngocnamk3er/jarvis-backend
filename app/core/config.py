@@ -68,6 +68,15 @@ class Settings(BaseSettings):
     # forward on every use, so it measures abandonment rather than age.
     AGENTSANDBOX_MAX_IDLE_SECONDS: int = 604_800  # 7 days
 
+    # Background research: start_research/check_research/cancel_research/
+    # list_research, which run the research subagent as a task that outlives the
+    # chat turn (app/agents/async_research.py). False leaves the tools out.
+    BACKGROUND_RESEARCH: bool = True
+    # How many background research tasks may run at once in this process. Each
+    # is a full search/fetch loop of LLM calls, so this bounds what one user
+    # asking for ten can cost everyone else.
+    BACKGROUND_RESEARCH_MAX_RUNNING: int = 4
+
     # Agentic retrieval for search_files — decompose, rerank, and retry once
     # when the first pass misses. See app/agents/retrieval.py. Costs two LLM
     # calls on the subagent model per search, three when a retry fires, so

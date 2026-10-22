@@ -3,6 +3,7 @@ from deepagents.middleware.subagents import SubAgentMiddleware
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, TodoListMiddleware
 
+from app.agents.async_research import BackgroundResearchMiddleware
 from app.agents.llm import build_llm_with_fallback
 from app.agents.middleware import (
     ContextTokensMiddleware,
@@ -12,6 +13,7 @@ from app.agents.middleware import (
 from app.agents.prompt import build_system_prompt
 from app.agents.subagents import RESEARCH_SUBAGENT
 from app.agents.tools import tools
+from app.core.config import settings
 
 
 def _bash_needs_approval(request) -> bool:
@@ -93,6 +95,13 @@ def build_graph(
             subagents=[RESEARCH_SUBAGENT],
         ),
     ]
+    # Conditional on config, not on the request, so the history graph (see
+    # include_tools above) gets the same `research_tasks` state channel.
+    if settings.BACKGROUND_RESEARCH:
+        middleware += [
+            SoftHardToolCallLimitMiddleware(tool_name="start_research", soft_limit=3, hard_limit=5),
+            BackgroundResearchMiddleware(),
+        ]
     return create_agent(
         model=build_llm_with_fallback(),
         tools=tools if include_tools else [],

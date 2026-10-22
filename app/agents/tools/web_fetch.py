@@ -10,7 +10,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from markdownify import markdownify
 
-from app.agents.tools.sandbox_manager import get_thread_id
+from app.agents.tools.sandbox_manager import get_thread_id, has_sandbox
 from app.agents.tools.sandbox_save import save_and_stub
 
 _NOISE_TAGS = [
@@ -283,4 +283,6 @@ async def web_fetch(url: str, label: str, config: RunnableConfig) -> str:
     text = text.strip()
 
     thread_id = get_thread_id(config)
-    return await save_and_stub(thread_id, _filename_for(url), text, kind=f"web_fetch({url})")
+    return await save_and_stub(
+        thread_id, _filename_for(url), text, kind=f"web_fetch({url})", sandbox=has_sandbox(config)
+    )

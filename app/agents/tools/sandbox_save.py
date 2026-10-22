@@ -29,6 +29,12 @@ from app.agents.tools.sandbox_manager import exec_bash
 _PREVIEW_HEAD = 4_000
 _PREVIEW_TAIL = 4_000
 
+# Where a result is cut when the run has no sandbox to save it to (see
+# `sandbox` below). The model gets this much of it directly and has no way to
+# read the rest, so it's set well above the 10,000-char point where a sandbox
+# run starts saving to a file.
+_INLINE_CAP = 30_000
+
 # Linux caps any single execve() argv/envp string at MAX_ARG_STRLEN — 32 pages,
 # 128 KiB (131,072 bytes) on a standard 4 KiB-page kernel — independent of the
 # much larger total ARG_MAX. The sandbox agent runs the write via
@@ -43,15 +49,32 @@ _CHUNK_B64_CHARS = 60_000
 
 
 async def save_and_stub(
-    thread_id: str, filename: str, content: str, *, kind: str, min_chars: int = 10_000
+    thread_id: str,
+    filename: str,
+    content: str,
+    *,
+    kind: str,
+    min_chars: int = 10_000,
+    sandbox: bool = True,
 ) -> str:
     """Return `content` unchanged if it's short enough to not matter. Above
     `min_chars`, write it to `<filename>` (relative to the sandbox's working
     directory) and return a short stub instead. Degrades to returning
     `content` directly if the sandbox write fails for any reason — never
     silently drops data.
+
+    `sandbox=False` is for a run that has no `bash` to read a saved file back
+    with (the background research task): nothing is saved, and a result past
+    `_INLINE_CAP` is cut with a note saying so.
     """
     n = len(content)
+    if not sandbox:
+        if n <= _INLINE_CAP:
+            return content
+        return (
+            f"{content[:_INLINE_CAP].rstrip()}\n\n"
+            f"[{kind} — cut off here: showing the first {_INLINE_CAP:,} of {n:,} chars]"
+        )
     if n <= min_chars:
         return content
 

@@ -198,7 +198,10 @@ def _make_config(
     web_search: bool = True,
     unattended: bool = False,
 ) -> dict:
-    disabled = [] if web_search else ["web_search", "web_fetch"]
+    # start_research is research done on the web too — only the tool that
+    # begins a task is switched off; checking or cancelling one already
+    # running stays available.
+    disabled = [] if web_search else ["web_search", "web_fetch", "start_research"]
     if unattended:
         # ask_user interrupts for a human reply that will never come. Left
         # enabled, the run ends there with no answer, and a benchmark records

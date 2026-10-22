@@ -7,6 +7,7 @@ from app.core import observability
 from app.api.v1.router import router as api_v1_router
 from app.db.connection import init_db, close_db, get_store
 from app.clients import conversation_client, file_client
+from app.agents.async_research import research_runner
 from app.agents.tools import sandbox_manager
 from app.agents.graph import build_graph
 from app.agents.llm import enable_llm_cache
@@ -30,7 +31,9 @@ async def lifespan(app: FastAPI):
     # full tool list. See build_graph()'s docstring for why this is safe to
     # share the same checkpointer as app.state.graph above.
     app.state.history_graph = build_graph(checkpointer=checkpointer, store=store, include_tools=False)
+    research_runner.init(checkpointer)
     yield
+    await research_runner.shutdown()
     observability.shutdown_tracing()
     await close_db()
     await conversation_client.close_client()

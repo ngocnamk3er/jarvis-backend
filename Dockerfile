@@ -23,6 +23,15 @@ COPY requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt
 
+# playwright's bundled node driver links against libatomic, which
+# python:3.11-slim doesn't ship; without it `playwright install` below dies
+# with exit 127 ("libatomic.so.1: cannot open shared object file") — hit on
+# 2026-11-11 once requirements.txt's unpinned playwright resolved to 1.64.1.
+# A step of its own, after the pip layer, so adding it doesn't invalidate
+# the 15-minute pip install above.
+RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 \
+    && rm -rf /var/lib/apt/lists/*
+
 # generate_visualization_svg renders its output in headless Chromium before
 # returning it (see app/agents/tools/viz_validate.py) — same browser
 # `make install-browser` sets up for local dev.

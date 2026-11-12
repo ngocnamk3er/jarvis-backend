@@ -1,5 +1,6 @@
 """Custom middleware not covered by langchain's built-ins."""
 
+import json
 import logging
 from typing import Any, Awaitable, Callable
 
@@ -7,6 +8,7 @@ from langchain.agents.middleware.tool_call_limit import ToolCallLimitState
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
+    ExtendedModelResponse,
     ModelRequest,
     ModelResponse,
     ToolCallRequest,
@@ -14,7 +16,12 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.callbacks import adispatch_custom_event, dispatch_custom_event
 from langchain_core.messages import AIMessage, ToolCall, ToolMessage
+from langchain_core.utils.function_calling import convert_to_openai_tool
+from langgraph.types import Command
 from typing_extensions import NotRequired
+
+from app.agents.mcp_guard import USER_TOOL_PREFIX
+from app.agents.token_estimate import EXTRA_KEY, tokens as _tokens
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +114,96 @@ class ContextTokensMiddleware(AgentMiddleware):
     """
 
     state_schema = ContextTokensState
+
+class ContextBreakdownState(AgentState):
+    context_breakdown: NotRequired[dict]
+
+
+def _text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(b if isinstance(b, str) else str(b.get("text", "")) for b in content)
+    return str(content)
+
+
+class ContextBreakdownMiddleware(AgentMiddleware):
+    """Records how much of the model's context is fixed overhead — the system
+    prompt, the skills listing and the tool schemas — for the chat's context
+    panel, and how much a deferred tool would have cost had it been sent.
+
+    It has to be the LAST middleware in the list: the first one is outermost,
+    and each wrap_model_call that runs before this one may still add to the
+    system prompt (todo list, sub-agents, skills) or drop tools
+    (ToolToggleMiddleware, ToolSearchMiddleware), so only the innermost one
+    sees the request exactly as the model gets it. What the outer ones added or
+    held back is handed over in `request.state[EXTRA_KEY]`.
+
+    The result goes into the `context_breakdown` state key through the model
+    call's own Command, i.e. inside the graph's normal checkpoint write — never
+    through graph.aupdate_state while a run is going, which forks the thread's
+    checkpoints and loses writes (see _run_graph in chat_service.py).
+
+    Messages are not counted here: the provider's total_tokens is the real
+    figure, so messages = total - everything measured here, and the parts
+    always add up to the gauge.
+    """
+
+    state_schema = ContextBreakdownState
+
+    def __init__(self, mcp_tools: frozenset[str] = frozenset()):
+        self.mcp_tools = mcp_tools
+
+    def _kind(self, name: str) -> str:
+        return "mcp" if name in self.mcp_tools or name.startswith(USER_TOOL_PREFIX) else "builtin"
+
+    def _measure(self, request: ModelRequest) -> dict | None:
+        try:
+            extra = request.state.get(EXTRA_KEY) or {}
+            skills = extra.get("skills", 0)
+            system = max(0, (_tokens(_text(request.system_message.content)) if request.system_message else 0) - skills)
+            detail = []
+            for t in request.tools or []:
+                spec = t if isinstance(t, dict) else convert_to_openai_tool(t)
+                name = (spec.get("function") or {}).get("name") or spec.get("name") or "tool"
+                detail.append({
+                    "name": name,
+                    "tokens": _tokens(json.dumps(spec, default=str)),
+                    "kind": self._kind(name),
+                })
+            detail.sort(key=lambda d: -d["tokens"])
+            held = extra.get("deferred") or []
+            return {
+                "system": system,
+                "skills": skills,
+                "tools": sum(d["tokens"] for d in detail if d["kind"] == "builtin"),
+                "mcp_tools": sum(d["tokens"] for d in detail if d["kind"] == "mcp"),
+                "tool_detail": detail,
+                "deferred": {
+                    "tokens": sum(d["tokens"] for d in held),
+                    "detail": [{**d, "kind": self._kind(d["name"])} for d in held],
+                },
+            }
+        except Exception:  # a display-only figure must never break a model call
+            logger.warning("could not measure context breakdown", exc_info=True)
+            return None
+
+    @staticmethod
+    def _with(resp: Any, measured: dict | None) -> Any:
+        if measured is None or not isinstance(resp, ModelResponse):
+            return resp
+        return ExtendedModelResponse(model_response=resp, command=Command(update={"context_breakdown": measured}))
+
+    def wrap_model_call(
+        self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]
+    ) -> Any:
+        return self._with(handler(request), self._measure(request))
+
+    async def awrap_model_call(
+        self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]
+    ) -> Any:
+        return self._with(await handler(request), self._measure(request))
+
 
 # Custom event name dispatched on a soft/hard breach — picked up by
 # chat_service.py's _run_graph (as an `on_custom_event` from astream_events)

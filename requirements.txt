@@ -1,5 +1,7 @@
 fastapi==0.115.0
-uvicorn[standard]==0.30.6
+# Not pinned to 0.30.6: mcp >= 1.20 needs uvicorn >= 0.31, and with uvicorn held
+# back pip fell back to mcp 1.12, which does not import under pydantic 2.14.
+uvicorn[standard]>=0.34
 pydantic>=2.9.2
 pydantic-settings>=2.10.1
 python-dotenv==1.0.1
@@ -16,6 +18,10 @@ python-multipart>=0.0.9
 langgraph>=1.0.0
 langchain>=1.0.0
 deepagents>=0.6.0
+# MCP servers as tools — see app/agents/mcp_tools.py.
+langchain-mcp-adapters>=0.2.0
+# Below 2: 2.x changes the client API the adapters are written against.
+mcp>=1.20,<2
 langchain-community>=0.4.0
 langchain-openai>=1.0.0
 langchain-core>=1.0.0

@@ -82,6 +82,35 @@ async def init_db() -> AsyncPostgresSaver:
             """
         )
 
+    # MCP servers users add from the chat UI (see app/agents/user_mcp.py):
+    # per user, with the headers (tokens) encrypted; plus the conversations a
+    # server is switched off for — on by default everywhere.
+    async with pool.connection() as conn:
+        await conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {SCHEMA}.user_mcp_servers (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                url TEXT NOT NULL,
+                transport TEXT NOT NULL,
+                headers_enc TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE (user_id, name)
+            )
+            """
+        )
+        await conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {SCHEMA}.conversation_mcp_disabled (
+                conversation_id TEXT NOT NULL,
+                server_id UUID NOT NULL REFERENCES {SCHEMA}.user_mcp_servers(id) ON DELETE CASCADE,
+                PRIMARY KEY (conversation_id, server_id)
+            )
+            """
+        )
+
     return checkpointer
 
 

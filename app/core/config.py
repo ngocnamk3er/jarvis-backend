@@ -89,6 +89,32 @@ class Settings(BaseSettings):
     # something fast and non-reasoning — these are classification tasks.
     RETRIEVAL_MODEL: str = "deepseek/deepseek-v4-flash"
 
+    # Skills (app/agents/skills.py): SKILL.md instructions loaded on demand.
+    # Empty SKILLS_DIR means the app/skills directory shipped with the image.
+    SKILLS_ENABLED: bool = True
+    SKILLS_DIR: str = ""
+    # Deferred tools (app/agents/tool_search.py): comma-separated tool names
+    # whose schemas are only sent once the model asks for them with
+    # tool_search. Chosen for being large and rarely needed.
+    DEFERRED_TOOLS: str = "generate_visualization_svg,cancel_research,list_research"
+    # MCP (app/agents/mcp_tools.py): a JSON object, or a path to a file
+    # holding one, naming the servers to load tools from. Empty = none.
+    MCP_SERVERS: str = ""
+    # Defer every MCP tool, so a server with many tools costs nothing until
+    # one is wanted.
+    MCP_DEFER: bool = True
+
+    # MCP servers users add themselves from the chat UI (app/agents/user_mcp.py).
+    MCP_USER_ENABLED: bool = True
+    MCP_USER_MAX_SERVERS: int = 10
+    # Fernet key that encrypts the headers (tokens) users give their servers.
+    # Unset: servers can still be added, but not with headers.
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    MCP_SECRET_KEY: str = ""
+    # Comma-separated hosts exempt from the public-address rule in
+    # app/agents/mcp_guard.py — e.g. an MCP server run inside the cluster.
+    MCP_USER_ALLOWED_HOSTS: str = ""
+
     class Config:
         env_file = ".env"
         case_sensitive = True

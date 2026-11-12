@@ -2,7 +2,7 @@
 async_research.py runs — as opposed to RESEARCH_SUBAGENT (subagents.py), which
 the main agent waits on through the `task` tool.
 
-Same model chain, same search/fetch tools and same per-tool caps, minus what
+Same model chain and search/fetch tools, with roomier per-tool caps, minus what
 can't work with nobody attached to the run: `bash` pauses for a human's
 approval, and `generate_visualization_svg` needs the sandbox's Chromium. A
 background run also sets `sandbox: False` in its config (see
@@ -37,7 +37,11 @@ def build_research_graph(checkpointer=None):
             # so a conversation with web search turned off gets the same answer
             # here as it would from the in-process subagent.
             ToolToggleMiddleware(),
-            SoftHardToolCallLimitMiddleware(tool_name="web_search", soft_limit=10, hard_limit=12),
-            SoftHardToolCallLimitMiddleware(tool_name="web_fetch", soft_limit=10, hard_limit=12),
+            # Roomier than the in-process subagent's 10/12: nobody waits on this
+            # one, and a question worth running in the background is usually a
+            # broad one — at 12 searches a four-way comparison was cut off
+            # before it could write anything.
+            SoftHardToolCallLimitMiddleware(tool_name="web_search", soft_limit=20, hard_limit=24),
+            SoftHardToolCallLimitMiddleware(tool_name="web_fetch", soft_limit=12, hard_limit=15),
         ],
     )

@@ -1,6 +1,8 @@
 from fastapi import HTTPException
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
+from app.agents.tool_output import tool_output_text
+from app.agents.async_research import describe_tasks, research_runner
 from app.agents.tools.sandbox_manager import reset as reset_sandbox
 from app.clients import conversation_client
 from app.db import feedback_repository
@@ -73,7 +75,7 @@ def serialize_messages(
     message_traces = message_traces or {}
     feedback_by_trace = feedback_by_trace or {}
     tool_outputs: dict[str, str] = {
-        msg.tool_call_id: str(msg.content)
+        msg.tool_call_id: tool_output_text(msg.content)
         for msg in messages
         if isinstance(msg, ToolMessage)
     }
@@ -218,6 +220,49 @@ async def delete_conversation(graph, conversation_id: str, user_id: str) -> None
 async def update_title(conversation_id: str, title: str, user_id: str):
     await _get_owned_conversation(conversation_id, user_id)
     await conversation_client.update_conversation_title(conversation_id, title)
+
+
+async def get_research_tasks(graph, conversation_id: str, user_id: str) -> list[dict]:
+    """The background research tasks started in a conversation, with live
+    progress — what the chat's side panel polls. The task ids live in the
+    conversation's own agent state (see app/agents/async_research.py); their
+    progress is read from each task's own thread."""
+    await _get_owned_conversation(conversation_id, user_id)
+    if not research_runner.ready:
+        return []
+    state = await graph.aget_state({"configurable": {"thread_id": conversation_id}})
+    return await describe_tasks((state.values or {}).get("research_tasks") or {})
+
+
+async def get_context_breakdown(graph, conversation_id: str, user_id: str) -> dict:
+    """What the conversation's context is made of, for the chat's context panel.
+
+    `total` is the provider-reported size of the last model call (the same
+    figure as the gauge). The system prompt, skills listing and tool schemas
+    are measured by ContextBreakdownMiddleware on that call; messages are what
+    is left, so the parts always add up to `total`. `deferred` is what the
+    tools held back by ToolSearchMiddleware would have cost — not part of the
+    total. A conversation with no model call since the breakdown was
+    introduced has the total only."""
+    conv = await _get_owned_conversation(conversation_id, user_id)
+    total = conv.context_tokens or 0
+    state = await graph.aget_state({"configurable": {"thread_id": conversation_id}})
+    b = (state.values or {}).get("context_breakdown")
+    if not b:
+        return {"total": total, "system_prompt": None, "skills": None, "tools": None, "mcp_tools": None,
+                "messages": None, "tool_detail": [], "deferred": {"tokens": 0, "detail": []}}
+    system, skills = b.get("system", 0), b.get("skills", 0)
+    tools, mcp = b.get("tools", 0), b.get("mcp_tools", 0)
+    return {
+        "total": total,
+        "system_prompt": system,
+        "skills": skills,
+        "tools": tools,
+        "mcp_tools": mcp,
+        "messages": max(0, total - system - skills - tools - mcp),
+        "tool_detail": b.get("tool_detail", []),
+        "deferred": b.get("deferred") or {"tokens": 0, "detail": []},
+    }
 
 
 async def get_messages(graph, conversation_id: str, user_id: str) -> dict:

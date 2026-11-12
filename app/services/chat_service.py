@@ -1,13 +1,17 @@
 import asyncio
 import json
 import logging
-from langchain_core.messages import AIMessage, HumanMessage
+
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage
+from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.types import Command
 
+from app.agents.llm import build_llm_with_fallback
 from app.agents.middleware import TOOL_CALL_LIMIT_EVENT
 from app.agents.tools.sandbox_manager import reset as reset_sandbox
 from app.clients import conversation_client
 from app.core import observability
+from app.agents.tool_output import tool_output_text
 from app.schemas.chat import AVAILABLE_MODELS
 
 logger = logging.getLogger(__name__)
@@ -21,6 +25,14 @@ logger = logging.getLogger(__name__)
 # mid-flight risks the same kind of dangling-tool_call/orphaned-interrupt
 # problems this session's interrupt-safety work went out of its way to avoid.
 _MODEL_CONTEXT_WINDOW = {m["id"]: m["contextWindow"] for m in AVAILABLE_MODELS}
+
+# Fraction of the real context window at which stream() proactively compacts
+# old history (see _compact_conversation), instead of only ever hitting the
+# hard block below. 0.8 leaves 20% of the window as headroom for the reply
+# plus at least one more turn before the next check — not copied from
+# anywhere, just a number with a stated reason, same spirit as the old
+# COMPACT_ELIGIBILITY_TOKENS this replaces (git log 572e254).
+COMPACT_THRESHOLD_RATIO = 0.8
 
 # ---------------------------------------------------------------------------
 # Thinking parser — splits <think>…</think> out of the content stream
@@ -142,9 +154,9 @@ class ToolEndEventHandler:
             # their result in update={"messages": [ToolMessage(...)]} rather
             # than returning content directly.
             msgs = (raw.update or {}).get("messages") or []
-            output = msgs[0].content if msgs and hasattr(msgs[0], "content") else str(raw)
+            output = tool_output_text(msgs[0].content) if msgs and hasattr(msgs[0], "content") else str(raw)
         else:
-            output = raw.content if hasattr(raw, "content") else str(raw)
+            output = tool_output_text(raw.content) if hasattr(raw, "content") else str(raw)
         try:
             data = json.loads(output)
             if "__viz__" in data:
@@ -255,6 +267,111 @@ def _extract_hitl_events(state) -> list[str]:
                 "options": value.get("options"),
             }))
     return events
+
+
+async def _compact_conversation(graph, config: dict, model: str | None) -> int | None:
+    """Replace ALL prior messages with one summary. Called from stream()
+    before a brand-new user message when conv.context_tokens + the new
+    message would cross COMPACT_THRESHOLD_RATIO of the model's real context
+    window — see stream() for the trigger check.
+
+    Unlike the SummarizationMiddleware/SummarizationToolMiddleware pair this
+    project removed on 2026-08-18 (git log 572e254), this is a plain function
+    chat_service calls directly — no model-facing tool, no second eligibility
+    check inside create_agent()'s own middleware chain. That distinction is
+    the whole point: the removed version's actual bug was that its automatic
+    path trusted token_counter(messages) (a local, approximate count that
+    can't see the system prompt and undercounts non-English text) while its
+    manual path trusted usage_metadata on the last AIMessage (the real
+    provider count) — two different numbers that drifted apart, so a
+    conversation eligible by one measure read as "nothing to compact yet" by
+    the other. Here there is exactly one number for "how big is the history
+    right now" — conv.context_tokens, the same provider-reported total
+    _usage_event already feeds everywhere else in this file — so that
+    specific drift can't recur. (stream()'s pre-check also factors in a local
+    estimate of the brand-new message, which is unavoidably approximate since
+    it hasn't been sent yet — but that estimate only decides *when* to call
+    this function, never what this function measures once it runs.)
+
+    Returns the new context_tokens for the replacement summary (from the
+    summarization call's own real usage_metadata), or None if nothing was
+    compacted (too little history yet, an interrupt is pending, or the model
+    returned an empty summary) — callers should treat None as "state
+    unchanged" and fall through to whatever check runs next.
+    """
+    state = await graph.aget_state(config)
+
+    # Never touch state while a HITL/clarify interrupt is unresolved — the
+    # exact landmine the old compact() hit (see this file's git history):
+    # mutating `messages` here would silently orphan that interrupt's pending
+    # tool_call, with no ToolMessage ever generated for it, breaking the
+    # thread on the next real turn. stream() only calls this before a
+    # brand-new message, where no interrupt should be pending — but a direct
+    # API call bypassing the frontend's own guard could still race one, so
+    # this checks for real rather than trusting the caller.
+    if _extract_hitl_events(state):
+        return None
+
+    old_messages = state.values.get("messages", [])
+    # Nothing worth condensing yet — e.g. a fresh thread, or one message so far.
+    if len(old_messages) < 2:
+        return None
+
+    llm = build_llm_with_fallback(model)
+    compact_request = [
+        SystemMessage(content=(
+            "You are condensing an earlier conversation so another model can "
+            "resume the work with no loss of essential context. Condense the "
+            "conversation below into a structured checkpoint. Use terse "
+            "bullets, not prose paragraphs. Write exactly these sections, in "
+            "order, using \"(none)\" for an empty one — never drop a section:\n\n"
+            "## Primary Request and Intent\n"
+            "## Key Technical Concepts\n"
+            "## Files and Code\n"
+            "## Errors and Fixes\n"
+            "## Pending Work"
+        )),
+        *old_messages,
+        HumanMessage(content="Produce the checkpoint now, following exactly that structure."),
+    ]
+    # A direct llm.ainvoke(), not a graph run — deliberately bypasses
+    # create_agent()'s tools/middleware entirely (including observability's
+    # tracing callbacks on config; this call isn't traced). Keeping this
+    # outside the agent loop is what makes "no second eligibility check" above
+    # true: there's no middleware here that could decide independently
+    # whether to run.
+    summary = await llm.ainvoke(compact_request)
+    summary_text = (summary.content or "").strip()
+    if not summary_text:
+        return None
+
+    # Same framing dsh-compaction-basic (a different project's compaction
+    # package) uses for its replacement message: a plain instruction, not a
+    # claim that the model itself asked for this.
+    checkpoint = (
+        "This is an automatically generated checkpoint condensing an earlier "
+        "span of the conversation to free up context. Treat it as established "
+        "background and build on it without restating it.\n\n"
+        f"<compacted-summary>\n{summary_text}\n</compacted-summary>"
+    )
+
+    # Messages LangGraph never assigned an id to can't be targeted by
+    # RemoveMessage and are left in place — same residual-message risk the
+    # original implementation had; not expected in practice since
+    # create_agent()'s checkpointer assigns one to everything it persists.
+    removals = [RemoveMessage(id=m.id) for m in old_messages if getattr(m, "id", None)]
+    await graph.aupdate_state(
+        config,
+        {"messages": [*removals, HumanMessage(content=checkpoint)]},
+        # as_node deliberately omitted — identical reasoning to this file's
+        # other aupdate_state(config, {"context_tokens": ...}) call below:
+        # as_node="model" reschedules the whole after_model middleware chain
+        # as state.next, which conversation_service.get_messages() then reads
+        # as "turn still pending" on every later reload.
+    )
+
+    usage = summary.usage_metadata or {}
+    return usage.get("total_tokens") or None
 
 
 # ---------------------------------------------------------------------------
@@ -458,9 +575,21 @@ class ChatService:
                         results = [usage_event] if usage_event else None
                     else:
                         results = self._handle_token(event, parser, viz_indexes) or None
-                        for r in results or ():
+                        for r in list(results or ()):
                             if r.get("type") == "usage":
                                 last_context_tokens = r["total_tokens"]
+                                # Tell the frontend's gauge now, not at the end
+                                # of the turn — a turn with many tool round-trips
+                                # otherwise leaves it stale for minutes. Also
+                                # persisted right away (best-effort), so a Stop,
+                                # an error or a dropped connection mid-turn still
+                                # leaves the real number for the next page load,
+                                # which reads Conversation.context_tokens.
+                                results.append({"type": "context_tokens", "tokens": last_context_tokens})
+                                try:
+                                    await conversation_client.set_context_tokens(thread_id, last_context_tokens)
+                                except Exception:
+                                    logger.warning("could not save context tokens", exc_info=True)
                 elif event["event"] == "on_tool_start":
                     results = self._tool_start.handle(event, task_run_id=task_run_id)
                     if task_run_id:
@@ -581,6 +710,29 @@ class ChatService:
         context_window = _MODEL_CONTEXT_WINDOW.get(model)
         if context_window:
             conv = await conversation_client.get_conversation(thread_id)
+            if conv:
+                # Only this new-message estimate is a local approximation —
+                # there's no provider-reported number for a message not sent
+                # yet. conv.context_tokens is the same real, provider-reported
+                # total used everywhere else in this file (see _usage_event).
+                # See _compact_conversation's docstring for why mixing two
+                # *real* measurements (not this kind of one-sided estimate)
+                # is what actually broke the old implementation.
+                new_tokens_estimate = count_tokens_approximately([HumanMessage(content=content)])
+                compact_threshold = int(context_window * COMPACT_THRESHOLD_RATIO)
+                if conv.context_tokens + new_tokens_estimate > compact_threshold:
+                    compact_config = _make_config(
+                        thread_id, user_id, model=model, subagent_model=subagent_model
+                    )
+                    new_total = await _compact_conversation(graph, compact_config, model)
+                    if new_total is not None:
+                        await conversation_client.set_context_tokens(thread_id, new_total)
+                        conv = await conversation_client.get_conversation(thread_id)
+
+            # Final safety net: still refuse if, even after an attempted
+            # compaction above, the real total is at/over the hard limit —
+            # e.g. compaction was skipped (interrupt pending, empty summary)
+            # or a single message is itself larger than the window.
             if conv and conv.context_tokens >= context_window:
                 message = (
                     f"This conversation has reached {model}'s context window "

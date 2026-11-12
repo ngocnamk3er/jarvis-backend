@@ -11,6 +11,7 @@ from app.agents.async_research import research_runner
 from app.agents.tools import sandbox_manager
 from app.agents.graph import build_graph
 from app.agents.llm import enable_llm_cache
+from app.agents.mcp_tools import load_mcp_tools, parse_mcp_servers
 
 
 @asynccontextmanager
@@ -23,14 +24,17 @@ async def lifespan(app: FastAPI):
     sandbox_manager.init_client()
     checkpointer = await init_db()
     store = get_store()
-    app.state.graph = build_graph(checkpointer=checkpointer, store=store)
+    mcp_tools = await load_mcp_tools(parse_mcp_servers(settings.MCP_SERVERS))
+    app.state.graph = build_graph(checkpointer=checkpointer, store=store, extra_tools=mcp_tools)
     # No tools bound — used only for conversation_service.get_messages(),
     # which just calls graph.aget_state() to read a checkpoint. That never
     # invokes the model/tools, so this is functionally identical to
     # app.state.graph for that read-only path, without paying to bind the
     # full tool list. See build_graph()'s docstring for why this is safe to
     # share the same checkpointer as app.state.graph above.
-    app.state.history_graph = build_graph(checkpointer=checkpointer, store=store, include_tools=False)
+    app.state.history_graph = build_graph(
+        checkpointer=checkpointer, store=store, include_tools=False, extra_tools=mcp_tools
+    )
     research_runner.init(checkpointer)
     yield
     await research_runner.shutdown()

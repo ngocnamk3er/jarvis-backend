@@ -20,8 +20,10 @@ in a separate worker would remove that; the tool interface would not change.
 """
 
 import asyncio
+import contextvars
 import json
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -76,6 +78,8 @@ It keeps working while you and the user carry on — including across later mess
 - A status you saw earlier is stale. Always call `check_research` (one task) or `list_research`
   (all of them, or when you have lost a task id) before saying where a task stands.
 - A task cut short by a service restart shows as `interrupted`. Say so and offer to start it again.
+- A `success` task with `stopped_early` ran out of its search budget before it wrote a report. It has
+  no report: say so plainly, give what its steps show it covered, and offer a narrower follow-up.
 - `cancel_research` stops a task the user no longer wants.
 - Show the full task id every time."""
 
@@ -134,6 +138,22 @@ def _finished_cleanly(values: dict | None, next_nodes: tuple) -> bool:
         return False
     last = messages[-1]
     return last.type == "ai" and not last.tool_calls
+
+
+# What SoftHardToolCallLimitMiddleware's last message says when it ends a run
+# (app/agents/middleware.py). A run ended that way reaches its end, so it looks
+# like a finished one — with the stop notice where the report should be.
+_LIMIT_STOP = re.compile(r"tool call limit reached: hard limit exceeded")
+
+
+def _stopped_early(values: dict | None) -> str | None:
+    """The stop notice if the task was cut off by a tool-call limit, else None.
+    Such a task has no report: it ran out of budget before writing one."""
+    messages = (values or {}).get("messages") or []
+    if not messages:
+        return None
+    text = _text_of(messages[-1].content)
+    return text if _LIMIT_STOP.search(text) else None
 
 
 def _final_report(values: dict | None) -> str:
@@ -195,7 +215,19 @@ class ResearchRunner:
             "metadata": observability.trace_metadata(parent, inherited.get("user_id") or ""),
         }
         self._seq += 1
-        job = _Job(task=asyncio.create_task(self._run(task_id, description, config)), seq=self._seq)
+        # An empty context, not the caller's. A task inherits the context it is
+        # created in, and the one here is the main agent's tool call — whose
+        # LangChain callbacks include the chat stream's event handler. Inherited,
+        # every step the research agent takes (a web_search starting, a model
+        # token) is reported into the chat stream of the turn that started it:
+        # tool badges that never finish, and text interleaved into the main
+        # answer. The run's own callbacks (Langfuse) are passed in `config`.
+        job = _Job(
+            task=asyncio.create_task(
+                self._run(task_id, description, config), context=contextvars.Context()
+            ),
+            seq=self._seq,
+        )
         self._jobs[task_id] = job
         self._prune()
         return task_id
@@ -256,6 +288,38 @@ class ResearchRunner:
 
 
 research_runner = ResearchRunner()
+
+
+async def describe_tasks(tasks: dict) -> list[dict]:
+    """A conversation's research tasks as the UI's side panel shows them, newest
+    first: live status, what each has searched and fetched so far, its plan, and
+    the finished report. Read straight from the runner and the task's thread,
+    like check_research — the panel shows the same thing the agent would be told,
+    without going through the model."""
+
+    async def one(task: dict) -> dict:
+        row = {
+            "task_id": task["task_id"],
+            "description": task["description"],
+            "started_at": task["created_at"],
+        }
+        try:
+            status, error, values = await research_runner.inspect(task["task_id"], task["status"])
+        except Exception:  # noqa: BLE001 — one unreadable task must not blank the panel
+            logger.warning("could not read research task %s", task["task_id"], exc_info=True)
+            return {**row, "status": task["status"], **summarize_progress(None)}
+        row.update(status=status, **summarize_progress(values))
+        if status == "success":
+            if stopped := _stopped_early(values):
+                row["stopped_early"] = stopped
+            else:
+                row["report"] = _final_report(values)
+        elif status == "error":
+            row["error"] = error or "The research task failed."
+        return row
+
+    rows = await asyncio.gather(*(one(t) for t in tasks.values()))
+    return sorted(rows, key=lambda r: r["started_at"], reverse=True)
 
 
 class ResearchTask(TypedDict):
@@ -363,7 +427,10 @@ async def check_research(task_id: str, runtime: ToolRuntime) -> str | Command:
         **summarize_progress(values),
     }
     if status == "success":
-        result["report"] = _final_report(values)
+        if stopped := _stopped_early(values):
+            result["stopped_early"] = stopped
+        else:
+            result["report"] = _final_report(values)
     elif status == "error":
         result["error"] = error or "The research task failed."
     elif status == "interrupted":

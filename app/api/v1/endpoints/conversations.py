@@ -22,6 +22,16 @@ async def get_messages(conversation_id: str, req: Request, user: CurrentUser = D
     return await conversation_service.get_messages(req.app.state.history_graph, conversation_id, user.sub)
 
 
+@router.get("/{conversation_id}/research")
+async def get_research_tasks(conversation_id: str, req: Request, user: CurrentUser = Depends(get_current_user)):
+    return await conversation_service.get_research_tasks(req.app.state.history_graph, conversation_id, user.sub)
+
+
+@router.get("/{conversation_id}/context")
+async def get_context_breakdown(conversation_id: str, req: Request, user: CurrentUser = Depends(get_current_user)):
+    return await conversation_service.get_context_breakdown(req.app.state.history_graph, conversation_id, user.sub)
+
+
 @router.patch("/{conversation_id}/title")
 async def update_title(conversation_id: str, body: ConversationCreate, user: CurrentUser = Depends(get_current_user)):
     await conversation_service.update_title(conversation_id, body.title, user.sub)

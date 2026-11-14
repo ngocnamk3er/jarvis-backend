@@ -39,6 +39,16 @@ from typing import Literal
 #   a single small sample (133 vs 107 reasoning chars) — not enough to
 #   justify removing options from a model OpenRouter's docs treat as
 #   properly supported.
+# - qwen3.6-35b-a3b (added 2026-11-12): same Qwen thinking toggle, so ["none",
+#   "high"]. Checked live on one prompt: "none" returned 0 reasoning chars and got
+#   the arithmetic wrong; low/medium/high returned 1561/2007/2195 chars and were all
+#   right — a single small sample, so no graduated levels are offered. Also checked:
+#   structured tool calls, and reading a test image correctly. Price and context
+#   from OpenRouter's /models ($0.10 / $0.90, 262,144 tokens).
+# - claude-haiku-5.5 (added 2026-11-14): price and context from OpenRouter's /models ($0.10 / $0.50,
+#   1,000,000 tokens; image input and tool calls both listed). Effort levels are inferred from the
+#   same Anthropic family as opus-4.8 (not tested individually); "xhigh" is left out since it was not
+#   checked for this model. Added to compare against qwen3.6-35b-a3b on image extraction tasks.
 # - "none" (thinking off entirely) added for every model below after live
 #   testing it directly: reasoning_chars dropped to exactly 0 (a real answer
 #   still came back, not an error) for deepseek-v4-flash, deepseek-v4-pro,
@@ -55,10 +65,12 @@ from typing import Literal
 # claude-opus-4.8 both returned null there).
 AVAILABLE_MODELS = [
     {"id": "deepseek/deepseek-v4-flash",  "name": "DeepSeek Flash",     "desc": "Fast, cost-effective MoE",        "inputPrice": "$0.09",  "outputPrice": "$0.18",  "context": "1M",  "contextWindow": 1_000_000, "size": "13B active / 284B total", "default": True, "effortOptions": ["none", "high", "xhigh"], "huggingFaceId": "deepseek-ai/DeepSeek-V4-Flash"},
-    {"id": "qwen/qwen3.5-9b",             "name": "Qwen 3.5 9B",        "desc": "Compact, efficient multimodal",   "inputPrice": "$0.10",  "outputPrice": "$0.15",  "context": "262K", "contextWindow": 262_000, "size": "9B", "effortOptions": ["none", "high"], "huggingFaceId": "Qwen/Qwen3.5-9B"},
-    {"id": "qwen/qwen3.7-plus",           "name": "Qwen 3.7+",          "desc": "High quality",                     "inputPrice": "$0.32",  "outputPrice": "$1.28",  "context": "1M",  "contextWindow": 1_000_000, "size": "Undisclosed", "effortOptions": ["none", "high"], "huggingFaceId": None},
+    {"id": "qwen/qwen3.5-9b",             "name": "Qwen 3.5 9B",        "desc": "Compact, efficient multimodal",   "inputPrice": "$0.10",  "outputPrice": "$0.15",  "context": "262K", "contextWindow": 262_000, "size": "9B", "effortOptions": ["none", "high"], "vision": True, "huggingFaceId": "Qwen/Qwen3.5-9B"},
+    {"id": "qwen/qwen3.6-35b-a3b", "name": "Qwen 3.6 35B",     "desc": "Efficient MoE, multimodal",       "inputPrice": "$0.10",  "outputPrice": "$0.90",  "context": "262K", "contextWindow": 262_000, "size": "3B active / 35B total", "vision": True, "effortOptions": ["none", "high"], "huggingFaceId": "Qwen/Qwen3.6-35B-A3B"},
+    {"id": "anthropic/claude-haiku-5.5", "name": "Claude Haiku 5.5", "desc": "Fast, low-cost, multimodal", "inputPrice": "$0.10", "outputPrice": "$0.50", "context": "1M", "contextWindow": 1_000_000, "size": "Undisclosed", "effortOptions": ["none", "low", "medium", "high"], "vision": True, "huggingFaceId": None},
+    {"id": "qwen/qwen3.7-plus",           "name": "Qwen 3.7+",          "desc": "High quality",                     "inputPrice": "$0.32",  "outputPrice": "$1.28",  "context": "1M",  "contextWindow": 1_000_000, "size": "Undisclosed", "effortOptions": ["none", "high"], "vision": True, "huggingFaceId": None},
     {"id": "deepseek/deepseek-v4-pro",    "name": "DeepSeek Pro",       "desc": "Advanced reasoning, coding, agents", "inputPrice": "$0.435", "outputPrice": "$0.87",  "context": "1M", "contextWindow": 1_000_000, "size": "49B active / 1.6T total", "effortOptions": ["none", "high", "xhigh"], "huggingFaceId": "deepseek-ai/DeepSeek-V4-Pro"},
-    {"id": "anthropic/claude-opus-4.8",   "name": "Claude Opus 4.8",    "desc": "Frontier reasoning",               "inputPrice": "$1.70",  "outputPrice": "$25.00", "context": "1M", "contextWindow": 1_000_000, "size": "Undisclosed", "effortOptions": ["none", "low", "medium", "high", "xhigh"], "huggingFaceId": None},
+    {"id": "anthropic/claude-opus-4.8",   "name": "Claude Opus 4.8",    "desc": "Frontier reasoning",               "inputPrice": "$1.70",  "outputPrice": "$25.00", "context": "1M", "contextWindow": 1_000_000, "size": "Undisclosed", "effortOptions": ["none", "low", "medium", "high", "xhigh"], "vision": True, "huggingFaceId": None},
 ]
 
 DEFAULT_MODEL = next(m["id"] for m in AVAILABLE_MODELS if m.get("default"))
@@ -90,7 +102,10 @@ class ChatRequest(BaseModel):
 class ResumeRequest(BaseModel):
     thread_id: str
     decision: str
-    model: str = DEFAULT_MODEL
+    # None means "the model this conversation was already using" (resolved in the
+    # endpoint), NOT the default model: a resume that silently switched a conversation
+    # from a vision model to DeepSeek Flash made the agent invent image coordinates.
+    model: str | None = None
     subagent_model: str | None = None
     web_search: bool = True
 
@@ -98,7 +113,10 @@ class ResumeRequest(BaseModel):
 class ClarifyResumeRequest(BaseModel):
     thread_id: str
     answer: str
-    model: str = DEFAULT_MODEL
+    # None means "the model this conversation was already using" (resolved in the
+    # endpoint), NOT the default model: a resume that silently switched a conversation
+    # from a vision model to DeepSeek Flash made the agent invent image coordinates.
+    model: str | None = None
     subagent_model: str | None = None
     web_search: bool = True
 

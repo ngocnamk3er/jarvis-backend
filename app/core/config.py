@@ -96,7 +96,12 @@ class Settings(BaseSettings):
     # Deferred tools (app/agents/tool_search.py): comma-separated tool names
     # whose schemas are only sent once the model asks for them with
     # tool_search. Chosen for being large and rarely needed.
-    DEFERRED_TOOLS: str = "generate_visualization_svg,cancel_research,list_research"
+    # ocr_image, draw_boxes and view_image are deliberately NOT deferred: a model asked to "draw boxes" on an
+    # image did not think of loading them, and drew from coordinates it guessed or skipped the
+    # boxes altogether. Offered in every request, their descriptions are in front of it. view_image
+    # joined them after a test where, asked what an attached photo showed, the model answered from
+    # ocr_image's text alone (it drops diacritics and digits) instead of loading view_image first.
+    DEFERRED_TOOLS: str = "generate_visualization_svg,cancel_research,list_research,check_pdf,read_pdf,office_convert,office_recalculate"
     # MCP (app/agents/mcp_tools.py): a JSON object, or a path to a file
     # holding one, naming the servers to load tools from. Empty = none.
     MCP_SERVERS: str = ""

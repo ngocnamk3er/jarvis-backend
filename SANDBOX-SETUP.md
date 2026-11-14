@@ -272,6 +272,35 @@ Template and creates a NetworkPolicy per template. On a cluster whose CNI
 doesn't enforce NetworkPolicy — this one — that object exists but does
 nothing. Don't mistake its presence for isolation.
 
+### Our own sandbox image (libraries the agent needs)
+
+The upstream `python-runtime-sandbox` image ships only numpy, pandas, scipy, scikit-learn and
+lightgbm. The agent kept hitting `No module named 'PIL'`, and the `bash` tool description
+promised libraries that were not there. `Dockerfile.sandbox` adds them on top of the **same runtime
+image, pinned by digest** (the moving `latest-main` tag would change the :8888 server under us):
+
+- Python packages: `sandbox/requirements.txt` (and `requirements-nodeps.txt` for xgboost, whose wheel
+  drags in ~400 MB of GPU libraries). A constraints file frozen from the base keeps pip from moving the
+  runtime's own fastapi/uvicorn/pydantic/numpy/pandas; the build fails instead of breaking the server.
+- Command-line tools: file, curl, unzip, zip, jq, pandoc, poppler (pdftotext, pdftoppm) and
+  tesseract with English, Vietnamese, Japanese, Chinese (simplified and traditional), Korean, Russian, Thai, Arabic, French, German and Spanish data.
+- `tests/test_view_image.py::test_the_bash_description_matches_what_the_sandbox_image_installs` checks
+  the `bash` tool description against these files, so the model is never told a library exists that does not.
+
+Build, load and point the template at it (host networking, as the other builds here use):
+
+```bash
+docker build --network=host -f Dockerfile.sandbox -t jarvis-sandbox:libs1 .
+minikube image load jarvis-sandbox:libs1
+kubectl patch sandboxtemplate python-sandbox-template -n default --type json \
+  -p '[{"op":"replace","path":"/spec/podTemplate/spec/containers/0/image","value":"jarvis-sandbox:libs1"}]'
+```
+
+Editing the template does not reach sandboxes that already exist (see "Verify" below): delete the
+**unclaimed warm-pool** sandboxes so the pool recreates them, and leave every sandbox that has a
+`SandboxClaim` alone, since those belong to a conversation and carry its files. A conversation's
+sandbox keeps the image it was created with.
+
 ## 4. jarvis-backend side — RBAC + ServiceAccount
 
 jarvis-backend needs to create/list/delete `SandboxClaim`s and read

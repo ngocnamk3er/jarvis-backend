@@ -16,7 +16,7 @@ costs nothing on the turns that do not need it.
 The file format is the same SKILL.md as Claude Code's and deepagents', so a
 skill written for either drops in. deepagents' own SkillsMiddleware is not
 used: it expects the model to open the file through a filesystem backend, and
-Jarvis's `read_file` reads the user's uploaded workspace, not the server.
+Jarvis's `workspace_read_file` reads the user's uploaded workspace, not the server.
 """
 
 import logging

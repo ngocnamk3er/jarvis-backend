@@ -4,9 +4,9 @@ description: Answer a question about a spreadsheet or CSV in the user's file wor
 ---
 # Spreadsheet analysis
 
-A workbook has no extracted text, so `read_file` and `search_files` will not show its cells. Fetch it and compute.
+A workbook has no extracted text, so `workspace_read_file` and `workspace_search_files` will not show its cells. Fetch it and compute.
 
-1. `list_files` or `search_files` to find it, then `fetch_file` to copy it into your bash working directory.
+1. `workspace_list_files` or `workspace_search_files` to find it, then `workspace_copy_to_sandbox` to copy it into your bash working directory.
 2. Look before computing: sheet names, the header row, column dtypes, row count. A merged title row or a notes block above the table is common; find where the real header is before trusting `read_excel` defaults.
    ```python
    import pandas as pd

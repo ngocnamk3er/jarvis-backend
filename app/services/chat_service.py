@@ -8,11 +8,12 @@ from langgraph.types import Command
 
 from app.agents.llm import build_llm_with_fallback
 from app.agents.middleware import TOOL_CALL_LIMIT_EVENT
+from app.agents.pruning import prune_tool_results
 from app.agents.tools.sandbox_manager import reset as reset_sandbox
 from app.clients import conversation_client
 from app.core import observability
 from app.agents.tool_output import tool_output_text
-from app.schemas.chat import AVAILABLE_MODELS
+from app.schemas.chat import AVAILABLE_MODELS, DEFAULT_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,38 @@ _MODEL_CONTEXT_WINDOW = {m["id"]: m["contextWindow"] for m in AVAILABLE_MODELS}
 # anywhere, just a number with a stated reason, same spirit as the old
 # COMPACT_ELIGIBILITY_TOKENS this replaces (git log 572e254).
 COMPACT_THRESHOLD_RATIO = 0.8
+
+# On a small window 20% is not much room, so the trigger also leaves a fixed
+# reserve: the reply the model may write plus 65,536 tokens of headroom, the
+# same shape as DeepSeek Harness's compaction trigger
+# (floor(min(W * 0.8, W - O - 65,536))). Only models below ~400K tokens notice.
+COMPACT_HEADROOM_TOKENS = 65_536
+RESERVED_OUTPUT_TOKENS = 16_384
+
+
+# The newest part of the conversation stays word for word when older history is
+# condensed (DeepSeek Harness keeps the newest 16% of the usable window), so the
+# model still has the exact last turn(s) instead of only a summary of them.
+COMPACT_RETAIN_RATIO = 0.16
+
+
+def split_for_compaction(messages: list, budget_tokens: int) -> tuple[list, list]:
+    """(older messages to condense, newest messages to keep as they are).
+
+    The kept part starts at a user message, never in the middle of a turn, so a
+    tool call and its result are never separated. It is the longest such tail
+    that fits in `budget_tokens`; if even the last turn does not fit, nothing is
+    kept and everything is condensed."""
+    for i, m in enumerate(messages):
+        if i > 0 and isinstance(m, HumanMessage) and count_tokens_approximately(messages[i:]) <= budget_tokens:
+            return messages[:i], messages[i:]
+    return messages, []
+
+
+def compact_threshold(context_window: int) -> int:
+    """Total tokens above which stream() compacts before the next message."""
+    reserve = RESERVED_OUTPUT_TOKENS + COMPACT_HEADROOM_TOKENS
+    return max(context_window // 2, int(min(context_window * COMPACT_THRESHOLD_RATIO, context_window - reserve)))
 
 # ---------------------------------------------------------------------------
 # Thinking parser — splits <think>…</think> out of the content stream
@@ -190,9 +223,22 @@ class ToolEndEventHandler:
         artifact = getattr(raw, "artifact", None)
         if isinstance(artifact, dict) and artifact.get("citations"):
             end["citations"] = artifact["citations"]
+        # view_image does the same with the pictures it opened: the ids of the
+        # stored images, which the chat shows under the step.
+        if isinstance(artifact, dict) and artifact.get("images"):
+            end["images"] = artifact["images"]
         if task_run_id:
             end["task_run_id"] = task_run_id
         events.append(end)
+        # A tool can hand files over the same way (draw_boxes: the picture it drew), shown
+        # as the chips present_file makes, so the result is on screen whether or not the
+        # model goes on to say so.
+        if isinstance(artifact, dict):
+            for f in artifact.get("files") or []:
+                file_event: dict = {"type": "file", **f}
+                if task_run_id:
+                    file_event["task_run_id"] = task_run_id
+                events.append(file_event)
         return events
 
 
@@ -270,7 +316,8 @@ def _extract_hitl_events(state) -> list[str]:
 
 
 async def _compact_conversation(graph, config: dict, model: str | None) -> int | None:
-    """Replace ALL prior messages with one summary. Called from stream()
+    """Replace the older prior messages with one summary, keeping the newest
+    COMPACT_RETAIN_RATIO of the window verbatim. Called from stream()
     before a brand-new user message when conv.context_tokens + the new
     message would cross COMPACT_THRESHOLD_RATIO of the model's real context
     window — see stream() for the trigger check.
@@ -316,6 +363,11 @@ async def _compact_conversation(graph, config: dict, model: str | None) -> int |
     # Nothing worth condensing yet — e.g. a fresh thread, or one message so far.
     if len(old_messages) < 2:
         return None
+    window = _MODEL_CONTEXT_WINDOW.get(model or DEFAULT_MODEL, 1_000_000)
+    to_condense, kept = split_for_compaction(
+        old_messages, int((window - RESERVED_OUTPUT_TOKENS) * COMPACT_RETAIN_RATIO))
+    if len(to_condense) < 2:
+        return None
 
     llm = build_llm_with_fallback(model)
     compact_request = [
@@ -331,7 +383,8 @@ async def _compact_conversation(graph, config: dict, model: str | None) -> int |
             "## Errors and Fixes\n"
             "## Pending Work"
         )),
-        *old_messages,
+        # Bulk tool output adds little to a summary and can overflow the request.
+        *prune_tool_results(to_condense),
         HumanMessage(content="Produce the checkpoint now, following exactly that structure."),
     ]
     # A direct llm.ainvoke(), not a graph run — deliberately bypasses
@@ -362,7 +415,11 @@ async def _compact_conversation(graph, config: dict, model: str | None) -> int |
     removals = [RemoveMessage(id=m.id) for m in old_messages if getattr(m, "id", None)]
     await graph.aupdate_state(
         config,
-        {"messages": [*removals, HumanMessage(content=checkpoint)]},
+        # The kept messages are removed and added back after the summary, so the
+        # order stays summary first; a copy without its id gets a new one. Tool
+        # results keep their artifacts (stored image ids, sources) in the copy.
+        {"messages": [*removals, HumanMessage(content=checkpoint),
+                      *[m.model_copy(update={"id": None}) for m in kept]]},
         # as_node deliberately omitted — identical reasoning to this file's
         # other aupdate_state(config, {"context_tokens": ...}) call below:
         # as_node="model" reschedules the whole after_model middleware chain
@@ -719,8 +776,8 @@ class ChatService:
                 # *real* measurements (not this kind of one-sided estimate)
                 # is what actually broke the old implementation.
                 new_tokens_estimate = count_tokens_approximately([HumanMessage(content=content)])
-                compact_threshold = int(context_window * COMPACT_THRESHOLD_RATIO)
-                if conv.context_tokens + new_tokens_estimate > compact_threshold:
+                threshold = compact_threshold(context_window)
+                if conv.context_tokens + new_tokens_estimate > threshold:
                     compact_config = _make_config(
                         thread_id, user_id, model=model, subagent_model=subagent_model
                     )

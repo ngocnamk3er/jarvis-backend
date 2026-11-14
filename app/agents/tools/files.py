@@ -11,7 +11,7 @@ way it would with any shell -- explicit paths sidestep that entirely. See
 
 No HumanInTheLoopMiddleware approval on any of these, same posture as
 web_search/web_fetch (unlike bash, which can run arbitrary commands). All
-but `fetch_file` are read-only, and `fetch_file` only writes a file the
+but `workspace_copy_to_sandbox` are read-only, and `workspace_copy_to_sandbox` only writes a file the
 user already owns into that user's own throwaway sandbox — the same thing
 web_fetch does with a page it just downloaded."""
 
@@ -25,6 +25,7 @@ from langchain_core.tools import tool
 from app.agents import retrieval
 from app.agents.tools import sandbox_manager
 from app.agents.tools.sandbox_manager import get_thread_id
+from app.agents.tools.text_window import WindowError, read_window
 from app.agents.tools.sandbox_save import save_and_stub
 from app.clients import file_client
 
@@ -53,7 +54,13 @@ def _format_size(n: int | None) -> str:
     return f"{n:.1f}TB"
 
 
-@tool
+# Said whenever a path is not found in the file workspace: a model that was handed an attached file, or made one
+# with bash, often reaches for these tools first, and they never see the sandbox's working directory.
+_NOT_IN_WORKSPACE = (" This tool only sees the user's file workspace. A file attached to the user's message, or one "
+                     "you made in the sandbox, is in your bash working directory: use `bash` (ls, cat...) for those.")
+
+
+@tool("workspace_list_files")
 async def list_files(path: str, config: RunnableConfig) -> str:
     """List the folders and files at a path in the user's persistent file
     workspace (uploaded via the UI — separate from bash's ephemeral sandbox).
@@ -65,7 +72,7 @@ async def list_files(path: str, config: RunnableConfig) -> str:
     try:
         nodes = await file_client.list_tree(_user_id(config), path)
     except httpx.HTTPStatusError as e:
-        return f"Error: {e.response.text}"
+        return f"Error: {e.response.text}" + (_NOT_IN_WORKSPACE if e.response.status_code == 404 else "")
     if not nodes:
         return f"(empty) {path}"
     lines = []
@@ -78,23 +85,36 @@ async def list_files(path: str, config: RunnableConfig) -> str:
     return "\n".join(lines)
 
 
-@tool
-async def read_file(path: str, config: RunnableConfig) -> str:
+@tool("workspace_read_file")
+async def read_file(
+    path: str, config: RunnableConfig, offset: int | None = None, limit: int | None = None
+) -> str:
     """Read a file's extracted text content from the user's file workspace.
 
-    A long document is saved to a file in the bash sandbox and you get back
-    a short preview instead of the whole thing — use `bash` to grep or read
-    out the part you actually need.
+    Only for files in that workspace (found with `workspace_list_files` or `workspace_search_files`). It cannot open a
+    file attached to the user's message or one in your sandbox: those are in your bash working
+    directory, and `bash` reads them.
+
+    Without `offset` and `limit`, a long document is saved to a file in the bash
+    sandbox and you get back a short preview instead of the whole thing — use
+    `bash` to grep or read out the part you actually need.
+
+    With `offset` and/or `limit` you get a numbered window of the text instead
+    (`12: some line`), up to 2,000 lines or about 50 KB a call, and the last
+    line tells you where to continue: `Use offset=N to continue`. Use this to
+    read a long document in order, one piece at a time.
 
     Args:
         path: Root-relative file path, e.g. "/docs/2024/report.pdf".
+        offset: First line to return, counting from 1.
+        limit: How many lines to return (at most 2,000).
     """
     try:
         node = await file_client.resolve_path(_user_id(config), path)
     except httpx.HTTPStatusError as e:
         return f"Error: {e.response.text}"
     if node is None:
-        return f"Error: not found: {path}"
+        return f"Error: not found: {path}." + _NOT_IN_WORKSPACE
     if node["type"] != "file":
         return f"Error: {path} is a folder, not a file"
     if node["indexing_status"] in ("pending", "extracting"):
@@ -107,8 +127,15 @@ async def read_file(path: str, config: RunnableConfig) -> str:
         return (
             f"'{node['name']}' has no extractable text (unsupported or binary file type). "
             f"If its content is structured — a spreadsheet, a PDF of scans, an image — use "
-            f"fetch_file to copy it into the bash sandbox and open it with a library there."
+            f"workspace_copy_to_sandbox to copy it into the bash sandbox and open it with a library there "
+            f"(for an image, then view_image to look at it)."
         )
+
+    if offset is not None or limit is not None:
+        try:
+            return read_window(node["extracted_text"], offset, limit)
+        except WindowError as e:
+            return f"Error: {e}"
 
     thread_id = get_thread_id(config)
     slug = re.sub(r"[^A-Za-z0-9]+", "-", node["name"]).strip("-")[:40] or "file"
@@ -118,7 +145,7 @@ async def read_file(path: str, config: RunnableConfig) -> str:
     )
 
 
-def _sandbox_name(name: str) -> str:
+def sandbox_name(name: str) -> str:
     """A filename safe to write into the sandbox, extension intact.
 
     The extension is load-bearing rather than cosmetic: pandas, openpyxl
@@ -142,7 +169,7 @@ def _sandbox_name(name: str) -> str:
     return cleaned[:_MAX_NAME_CHARS]
 
 
-@tool
+@tool("workspace_copy_to_sandbox")
 async def fetch_file(path: str, config: RunnableConfig) -> str:
     """Copy a file from the user's workspace into the bash sandbox, byte for byte.
 
@@ -153,7 +180,7 @@ async def fetch_file(path: str, config: RunnableConfig) -> str:
     there it is yours: open it with `bash` and whatever library the
     sandbox has.
 
-    When you only need the words out of a document, prefer `read_file`:
+    When you only need the words out of a document, prefer `workspace_read_file`:
     it hands you the text directly instead of costing you a second round
     trip through bash.
 
@@ -166,7 +193,7 @@ async def fetch_file(path: str, config: RunnableConfig) -> str:
     except httpx.HTTPStatusError as e:
         return f"Error: {e.response.text}"
     if node is None:
-        return f"Error: not found: {path}"
+        return f"Error: not found: {path}." + _NOT_IN_WORKSPACE
     if node["type"] != "file":
         return f"Error: {path} is a folder, not a file"
 
@@ -182,7 +209,7 @@ async def fetch_file(path: str, config: RunnableConfig) -> str:
     except httpx.HTTPStatusError as e:
         return f"Error: {e.response.text}"
 
-    name = _sandbox_name(node["name"])
+    name = sandbox_name(node["name"])
     try:
         await sandbox_manager.write_file(get_thread_id(config), name, content)
     except Exception as e:  # noqa: BLE001 — the sandbox can fail many ways; all of
@@ -215,8 +242,8 @@ def _snippet(text: str, query: str, width: int = 300) -> str:
     the end is invisible in the preview even though it is what matched.
     A real trace on 2026-10-03 showed the model call search_files(exact=
     True), get back a truncated preview that stopped short of the ID it
-    had just found, and spend a second round trip on read_file just to
-    see what search_files had already matched.
+    had just found, and spend a second round trip on workspace_read_file just to
+    see what workspace_search_files had already matched.
 
     Falls back to the start when `query` is not found verbatim — e.g. an
     ascii_folding match across a diacritic the plain text does not share,
@@ -290,7 +317,7 @@ def _citation(r: dict, exact: bool = False) -> dict:
 # draw highlights, the model would only pay tokens for them. LangChain keeps
 # it on the ToolMessage, so it reaches the live SSE stream (tool_end) and
 # survives in the checkpoint for when the conversation is reloaded.
-@tool(response_format="content_and_artifact")
+@tool("workspace_search_files", response_format="content_and_artifact")
 async def search_files(
     query: str, config: RunnableConfig, top_k: int = 5, exact: bool = False
 ) -> tuple[str, dict | None]:
@@ -306,10 +333,16 @@ async def search_files(
       matters — a query like "the invoice about late fees" would not
       find invoice number INV-2024-0871 that way, but the number itself
       will. Still needs real words to match on; it is not a filename or
-      path lookup (use list_files for that).
+      path lookup (use workspace_list_files for that).
 
-    Pairs with `list_files`, which shows what is there by path when you
-    want to browse rather than search. `read_file` and `fetch_file` both
+    The results already show the matching passages and the path of each
+    file: answer "is there a document about X" and "which file says Y" from
+    them, and open a file with `workspace_read_file` / `workspace_copy_to_sandbox` only when the
+    passage is not enough for what the user asked. Do not read every file
+    that came back.
+
+    Pairs with `workspace_list_files`, which shows what is there by path when you
+    want to browse rather than search. `workspace_read_file` and `workspace_copy_to_sandbox` both
     need a path — one of these results, one from a listing, or one the
     user gave you.
 
@@ -332,7 +365,7 @@ async def search_files(
         if e.response.status_code == 400:
             return (
                 "Semantic search isn't configured for this deployment — browse with "
-                "list_files instead."
+                "workspace_list_files instead."
             ), None
         return f"Error: {e.response.text}", None
     if not results:

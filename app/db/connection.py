@@ -111,6 +111,31 @@ async def init_db() -> AsyncPostgresSaver:
             """
         )
 
+    # Images the agent has looked at (view_image) — DeepSeek Harness's "attachment
+    # store". Saved once, content-addressed per conversation (the same bytes are
+    # one row), and referenced by id from the tool result, so a later turn, a
+    # restart, a deleted sandbox file or a page reload all still find the picture.
+    # Removed with the conversation.
+    async with pool.connection() as conn:
+        await conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {SCHEMA}.attachments (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                mime TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                data BYTEA NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE (user_id, thread_id, sha256)
+            )
+            """
+        )
+        await conn.execute(
+            f"CREATE INDEX IF NOT EXISTS attachments_thread_idx ON {SCHEMA}.attachments (thread_id)"
+        )
+
     return checkpointer
 
 

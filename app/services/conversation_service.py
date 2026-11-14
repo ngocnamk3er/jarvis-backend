@@ -1,11 +1,15 @@
 from fastapi import HTTPException
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
+import logging
+
 from app.agents.tool_output import tool_output_text
 from app.agents.async_research import describe_tasks, research_runner
 from app.agents.tools.sandbox_manager import reset as reset_sandbox
 from app.clients import conversation_client
-from app.db import feedback_repository
+from app.db import attachment_repository, feedback_repository
+
+logger = logging.getLogger(__name__)
 
 
 async def _get_owned_conversation(conversation_id: str, user_id: str):
@@ -47,6 +51,8 @@ def _replay_subagent_trace(trace: list[dict], task_tool_call_id: str) -> list[di
                 tool["output"] = ev.get("output")
                 if ev.get("citations"):
                     tool["citations"] = ev["citations"]
+                if ev.get("images"):
+                    tool["images"] = ev["images"]
         elif ev["type"] == "todo_update":
             # write_todos replaces the whole list each call — keep updating
             # the same part in place rather than stacking a new one per call,
@@ -88,6 +94,25 @@ def serialize_messages(
         if isinstance(msg, ToolMessage)
         and isinstance(getattr(msg, "artifact", None), dict)
         and msg.artifact.get("citations")
+    }
+
+    # The images view_image opened, from the same artifact — the chat shows them
+    # under the step after a reload as it did while streaming.
+    tool_images: dict[str, list] = {
+        msg.tool_call_id: msg.artifact["images"]
+        for msg in messages
+        if isinstance(msg, ToolMessage)
+        and isinstance(getattr(msg, "artifact", None), dict)
+        and msg.artifact.get("images")
+    }
+
+    # The files a tool handed over (see ToolEndEventHandler): shown as chips after its step.
+    tool_files: dict[str, list] = {
+        msg.tool_call_id: msg.artifact["files"]
+        for msg in messages
+        if isinstance(msg, ToolMessage)
+        and isinstance(getattr(msg, "artifact", None), dict)
+        and msg.artifact.get("files")
     }
 
     result: list[dict] = []
@@ -189,7 +214,11 @@ def serialize_messages(
                     tool_part["parent_run_id"] = batch_id
                 if tc["id"] in tool_citations:
                     tool_part["citations"] = tool_citations[tc["id"]]
+                if tc["id"] in tool_images:
+                    tool_part["images"] = tool_images[tc["id"]]
                 pending_parts.append({"type": "tool", "tool": tool_part})
+                for f in tool_files.get(tc["id"], []):
+                    pending_parts.append({"type": "file", **f})
 
                 trace = subagent_traces.get(tc["id"])
                 if trace:
@@ -214,6 +243,10 @@ async def create_conversation(title: str, user_id: str):
 async def delete_conversation(graph, conversation_id: str, user_id: str) -> None:
     await _get_owned_conversation(conversation_id, user_id)
     await reset_sandbox(conversation_id)
+    try:
+        await attachment_repository.delete_by_thread(conversation_id)
+    except Exception:  # noqa: BLE001 — leftover images must not block deleting the conversation
+        logger.warning("could not delete attachments of %s", conversation_id, exc_info=True)
     await conversation_client.delete_conversation(conversation_id)
 
 

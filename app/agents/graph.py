@@ -15,6 +15,7 @@ from app.agents.middleware import (
 )
 from app.agents.skills import SkillsMiddleware, load_skills
 from app.agents.tool_search import ToolSearchMiddleware
+from app.agents.vision import ViewedImagesMiddleware, VisionNoticeMiddleware
 from app.agents.user_mcp import UserMCPMiddleware, deferred_catalog
 from app.agents.prompt import build_system_prompt
 from app.agents.subagents import RESEARCH_SUBAGENT
@@ -131,6 +132,9 @@ def build_graph(
     # time it decides what to hold back.
     middleware.append(UserMCPMiddleware())
     middleware.append(ToolSearchMiddleware(deferred, extra_catalog=deferred_catalog))
+    # Adds opened images to the request; before the breakdown so it is counted.
+    middleware.append(ViewedImagesMiddleware())
+    middleware.append(VisionNoticeMiddleware())
     # Last on purpose: it measures the request after every other middleware
     # has had its say (see its docstring).
     middleware.append(ContextBreakdownMiddleware(mcp_tools=mcp_names))

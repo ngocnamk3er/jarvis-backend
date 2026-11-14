@@ -67,15 +67,25 @@ async def bash(command: str, label: str, config: RunnableConfig) -> str:
     snippet to pull out the specific part you need instead of dumping a
     whole file.
 
-    The environment is FIXED and OFFLINE — you cannot install packages
-    (`pip`/`uv` are removed, the filesystem is read-only, there is no network)
-    and cannot fetch anything from a URL. Work with what's provided. Available:
-    Python 3.11 with numpy, pandas, scipy, statsmodels, pyarrow, scikit-learn,
-    xgboost, lightgbm, matplotlib, seaborn, plotly, nltk (corpora bundled),
-    beautifulsoup4/lxml, python-docx, python-pptx, openpyxl, xlsxwriter,
-    reportlab, fpdf2, pillow, jinja2, and pandoc for generating
-    .docx/.pptx/.xlsx/.pdf files. After creating a file, pass its path to
-    `present_file` to hand it to the user: `present_file("report.docx", ...)`.
+    The sandbox is a plain Python 3.14 environment. Installed: numpy, pandas,
+    scipy, scikit-learn, lightgbm, xgboost, statsmodels, pyarrow, matplotlib,
+    seaborn, plotly, pillow, opencv (cv2), pytesseract, openpyxl, xlrd,
+    xlsxwriter, python-docx, python-pptx, reportlab, fpdf2, pypdf, pdfplumber,
+    beautifulsoup4, lxml, requests, jinja2, pyyaml and svgwrite; and the
+    command-line tools file, curl, unzip, zip, jq, pandoc, pdftotext, pdftoppm
+    and tesseract (languages: eng, vie, jpn, chi_sim, chi_tra, kor, rus, tha, ara, fra, deu, spa). Use these rather than guessing at what
+    exists. Do not count on `pip install` or on the network.
+
+    Never estimate pixel coordinates by eye: to mark or locate things on an image
+    or on a page of a PDF, use `ocr_image` and then `draw_boxes`.
+
+    You cannot SEE an image from bash: to look at a picture or a page, use
+    `view_image`. For PDFs use `check_pdf` and `read_pdf`; for Word, Excel and
+    PowerPoint files `office_convert` and `office_recalculate` give you their
+    content as plain files. The libraries above are for making and changing
+    files: draw on an image with pillow, build a workbook with openpyxl, write a
+    report with python-docx or reportlab, then pass its path to `present_file` to
+    hand it to the user: `present_file("report.docx", ...)`.
 
     Common uses:
         bash("ls -la")

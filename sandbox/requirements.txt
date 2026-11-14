@@ -1,0 +1,43 @@
+# Python packages in the agent's bash sandbox image (see Dockerfile.sandbox).
+# This file is the single source of truth: the `bash` tool description is checked
+# against it by tests/test_sandbox_packages.py, so the model is never told the
+# sandbox has a library that it does not.
+#
+# Already in the upstream runtime image and so not listed here: numpy, pandas,
+# scipy, scikit-learn, lightgbm (and the runtime's own fastapi/uvicorn/pydantic,
+# which the build pins with a constraints file so these installs cannot move them).
+
+# images
+pillow
+opencv-python-headless
+pytesseract
+
+# Office and PDF files
+openpyxl
+xlrd
+xlsxwriter
+python-docx
+python-pptx
+reportlab
+fpdf2
+pypdf
+pdfplumber
+
+# data and plots
+matplotlib
+seaborn
+plotly
+statsmodels
+pyarrow
+svgwrite
+
+# text, web and misc
+beautifulsoup4
+lxml
+requests
+jinja2
+pyyaml
+tabulate
+tqdm
+pytz
+regex

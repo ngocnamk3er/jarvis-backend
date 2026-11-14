@@ -1,26 +1,41 @@
-FROM python:3.11-slim
+# The image for the agent's bash sandbox (the SandboxTemplate's container).
+#
+# It is the upstream agent-sandbox runtime plus the libraries and tools the agent
+# needs for files: images, Office, PDF, plots. Without them the agent hit
+# "No module named 'PIL'" and had to work around it, and the `bash` tool description
+# promised libraries that were not there.
+#
+# The base is pinned by digest, not by the moving `latest-main` tag, so rebuilding
+# this image cannot change the runtime server (main.py, the :8888 API) underneath us.
+# To move to a newer runtime, change the digest on purpose and re-test.
+ARG BASE=us-central1-docker.pkg.dev/k8s-staging-images/agent-sandbox/python-runtime-sandbox@sha256:a59e223cacd381c25cbaa8a553dc9d986b3a00a991fd984a2e20826c75ec9b06
+FROM ${BASE}
 
-# System dependencies
+USER root
+
+# Command-line tools. `file`, `unzip` and friends are what an agent reaches for first;
+# pandoc converts documents; poppler gives pdftotext/pdftoppm; tesseract reads text out
+# of images (with English, Vietnamese, Japanese, Chinese, Korean, Russian, Thai, Arabic, French, German and Spanish data) and, through pytesseract, reports where
+# each word is, which a model looking at a picture cannot do by eye. The fonts are what
+# matplotlib, reportlab and rendered pages use.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        gcc g++ \
+        file curl unzip zip jq \
+        pandoc poppler-utils \
+        tesseract-ocr tesseract-ocr-eng tesseract-ocr-vie \
+        tesseract-ocr-jpn tesseract-ocr-chi-sim tesseract-ocr-chi-tra tesseract-ocr-kor tesseract-ocr-rus tesseract-ocr-tha tesseract-ocr-ara tesseract-ocr-fra tesseract-ocr-deu tesseract-ocr-spa \
         fonts-dejavu-core fonts-liberation \
-        curl wget git jq \
-        libxml2-dev libxslt-dev libjpeg-dev libpng-dev \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
-# General Python libraries — split into smaller layers so a network
-# blip on one group doesn't force re-downloading everything, and add
-# generous timeout/retries to tolerate a slow/flaky connection.
-ENV PIP_DEFAULT_TIMEOUT=300 \
-    PIP_RETRIES=10
+COPY sandbox/requirements.txt sandbox/requirements-nodeps.txt /tmp/sandbox/
 
-RUN pip install --no-cache-dir numpy pandas scipy statsmodels
-RUN pip install --no-cache-dir matplotlib seaborn plotly kaleido
-RUN pip install --no-cache-dir scikit-learn xgboost lightgbm nltk
-RUN pip install --no-cache-dir requests httpx beautifulsoup4 lxml
-RUN pip install --no-cache-dir openpyxl xlrd python-docx reportlab fpdf2 pillow svgwrite
-RUN pip install --no-cache-dir yfinance
-RUN pip install --no-cache-dir tqdm rich tabulate pyyaml toml python-dateutil pytz regex
+# The constraints file freezes what the runtime already has (fastapi, uvicorn,
+# pydantic, numpy, pandas...), so installing these cannot upgrade them: pip fails
+# the build instead of breaking the server.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip freeze > /tmp/sandbox/constraints.txt \
+    && pip install --only-binary=:all: -c /tmp/sandbox/constraints.txt -r /tmp/sandbox/requirements.txt \
+    && pip install --only-binary=:all: --no-deps -r /tmp/sandbox/requirements-nodeps.txt \
+    && rm -rf /tmp/sandbox
 
-# uv — fast package manager, available for the agent to use ad hoc
-RUN pip install --no-cache-dir uv
+# Back to the unprivileged user the base runs as.
+USER 1000

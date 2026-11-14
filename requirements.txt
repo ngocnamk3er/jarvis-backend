@@ -37,3 +37,7 @@ k8s-agent-sandbox[async]==1.0.2
 # version has to track the self-hosted server's (jarvis-deploy/langfuse/),
 # which runs v4.
 langfuse>=4.0,<5
+pillow>=10
+pdfplumber>=0.11
+pypdfium2>=4.30
+opencv-python-headless>=4.9

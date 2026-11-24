@@ -81,6 +81,8 @@ live; the *directory* (400) case still hasn't been exercised through this
 path.
 """
 
+import asyncio
+import contextlib
 import logging
 import re
 import shlex
@@ -90,13 +92,20 @@ from k8s_agent_sandbox import AsyncSandboxClient
 from k8s_agent_sandbox.exceptions import SandboxRequestError
 from k8s_agent_sandbox.models import SandboxDirectConnectionConfig
 
+from app.clients import conversation_client
 from app.core.config import settings
+from app.core.conversation_lock import conversation_locks
+from app.core.sandbox_coordination import SandboxCoordination, coordination
 
 logger = logging.getLogger(__name__)
 
 _client: AsyncSandboxClient | None = None
 
 _THREAD_LABEL = "jarvis-thread"
+# Whose conversation the claim is, so that making room can pause the sandboxes of whoever has been away longest
+# rather than just the single idlest conversation. Claims created before this label existed have none, and each of
+# those counts as a user of its own.
+_USER_LABEL = "jarvis-user"
 _CLAIM_READY_TIMEOUT = 180  # generous first-claim cold start; adopting a warm pod is much faster
 # In-cluster DNS for the agent-sandbox-system sandbox-router Service.
 _ROUTER_URL = "http://sandbox-router-svc.agent-sandbox-system.svc.cluster.local:8080"
@@ -181,7 +190,209 @@ def _label_value(thread_id: str) -> str:
     return safe.strip("-_.") or "unknown"
 
 
-async def _touch_expiry(claim_name: str, namespace: str) -> None:
+class SandboxCapacityError(SandboxRequestError):
+    """Every sandbox slot is taken by a conversation that is busy. A SandboxRequestError so the callers that already
+    turn those into "sandbox unavailable" (the tools, the upload / download endpoints) need no new branch."""
+
+
+# Reasons a claim reports once its pod is gone (expired = paused, the volume stays) or finished.
+_NO_POD = {"SandboxExpired", "PodSucceeded", "PodFailed"}
+
+# The admission lock, the reservations (conversations admitted whose pod is not yet visible in the cluster) and the
+# conversations with a sandbox call in flight are shared between backend replicas: see core/sandbox_coordination.py.
+# thread label -> user label, so the conversation service is asked once per conversation, not once per eviction.
+_owners: dict[str, str] = {}
+
+
+@contextlib.asynccontextmanager
+async def _using(thread_id: str):
+    """A sandbox call is in flight on this conversation: its pod must not be paused until the block ends, on any replica."""
+    label = _label_value(thread_id)
+    await coordination.mark_in_use(label)
+    try:
+        yield
+    finally:
+        await coordination.unmark_in_use(label)
+
+
+async def _owner_of(label: str) -> str | None:
+    """The label of the user who owns conversation `label`, or None when that cannot be told.
+
+    Best-effort on purpose: a sandbox must still be had when the conversation service is down, and an unknown owner
+    only means this conversation is judged on its own, as before."""
+    if label in _owners:
+        return _owners[label]
+    try:
+        conv = await conversation_client.get_conversation(label)
+    except Exception:
+        logger.warning("could not look up the owner of conversation %s", label, exc_info=True)
+        return None
+    if conv is None or not conv.user_id:
+        return None
+    _owners[label] = _label_value(conv.user_id)
+    return _owners[label]
+
+
+def _parse_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+async def _list_objects(api: dict, namespace: str) -> list[dict]:
+    helper = _get_client().k8s_helper
+    result = await helper.custom_objects_api.list_namespaced_custom_object(namespace=namespace, **api)
+    return result.get("items", [])
+
+
+def _has_pod(claim: dict, sandbox: dict | None) -> bool:
+    """Whether this conversation's sandbox has a pod (or is getting one).
+
+    The Sandbox's own `shutdownTime` decides, because it is what this process writes: reviving pushes it into the
+    future, pausing sets it to now. The claim's Ready condition only follows a few seconds later, and judging by it
+    alone counted a sandbox that had just been revived as still paused, so a request arriving in that window was let
+    in over the ceiling."""
+    conditions = (claim.get("status") or {}).get("conditions") or []
+    ready = next((c for c in conditions if c.get("type") == "Ready"), None)
+    if ready and ready.get("status") != "True" and ready.get("reason") in {"PodSucceeded", "PodFailed"}:
+        return False
+    deadline = _parse_time(((sandbox or {}).get("spec") or {}).get("shutdownTime"))
+    if deadline is not None:
+        return deadline > datetime.now(timezone.utc)
+    return not (ready and ready.get("status") != "True" and ready.get("reason") in _NO_POD)
+
+
+async def _pause_idlest(
+    namespace: str,
+    label: str,
+    claims: list[dict],
+    sandboxes: dict[str, dict],
+    running: set[str],
+    requester: str | None = None,
+    only_user: str | None = None,
+    coord: SandboxCoordination | None = None,
+) -> str | None:
+    """Pause a sandbox of the user who has been away longest; the label of the conversation it was, or None.
+
+    A user is as recent as their most recent sandbox: someone using one conversation right now keeps all their other
+    sandboxes out of the running, however old those are. Among the users, the one gone longest loses first, and of
+    their sandboxes the idlest. So a user cannot hold slots just by having opened many conversations and then
+    wandered off, nor lose one to somebody else's older but less abandoned tab. The requester counts as active now.
+    `only_user` limits the choice to that user's sandboxes: the per-user limit makes room from the user's own.
+
+    Pausing is what the idle timeout does anyway: the pod goes, the volume (and so the files) stays, and the next
+    message revives it. Only a sandbox no run is using qualifies: its conversation has no run going, no call in flight
+    here, and it has been quiet for EVICT_MIN_IDLE, so a conversation between two tool calls of one turn keeps its pod.
+    """
+    busy = {_label_value(t) for t in await conversation_locks.all_running_threads()} | await (coord or coordination).in_use() | {label}
+    now = datetime.now(timezone.utc)
+    ttl = timedelta(seconds=settings.AGENTSANDBOX_TTL_SECONDS)
+    activity: dict[str, datetime] = {requester: now} if requester else {}
+    candidates = []
+    for claim in claims:
+        labels = claim["metadata"].get("labels") or {}
+        lbl = labels.get(_THREAD_LABEL)
+        if lbl not in running:
+            continue
+        user = labels.get(_USER_LABEL) or f"thread:{lbl}"
+        sandbox = sandboxes.get(((claim.get("status") or {}).get("sandbox") or {}).get("name", ""))
+        deadline = _parse_time(((sandbox or {}).get("spec") or {}).get("shutdownTime"))
+        if deadline is None or lbl in busy:
+            # never used, or in use right now: it cannot be paused, and it shows its user is here
+            if lbl in busy:
+                activity[user] = now
+            continue
+        last_use = deadline - ttl
+        activity[user] = max(activity.get(user, last_use), last_use)
+        if only_user is not None and user != only_user:
+            continue
+        if (now - last_use).total_seconds() < settings.AGENTSANDBOX_EVICT_MIN_IDLE_SECONDS:
+            continue
+        candidates.append((user, last_use, sandbox["metadata"]["name"], lbl))
+    if not candidates:
+        return None
+    user, _, name, victim = min(candidates, key=lambda c: (activity[c[0]], c[1]))
+    await _get_client().k8s_helper.custom_objects_api.patch_namespaced_custom_object(
+        namespace=namespace,
+        name=name,
+        body={"spec": {"shutdownTime": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "shutdownPolicy": "Retain"}},
+        _content_type=_MERGE_PATCH,
+        **_SANDBOX_API,
+    )
+    logger.warning("sandbox ceiling reached: paused a sandbox of the longest-away user (conversation %s) for %s", victim, label)
+    return victim
+
+
+@contextlib.asynccontextmanager
+async def _admission(label: str, coord: SandboxCoordination | None = None):
+    """Hold a slot for conversation `label` while its pod is being created or revived.
+
+    Two limits, checked in this order. A user may have AGENTSANDBOX_MAX_PODS_PER_USER pods: past it the user's own
+    idlest sandbox is paused. And AGENTSANDBOX_MAX_PODS pods may exist at all: past it a sandbox of the user who has
+    been away longest is paused (see _pause_idlest). If nothing can be paused, waits (polling) up to
+    AGENTSANDBOX_ADMIT_WAIT_SECONDS for something to free up, then raises SandboxCapacityError. Counted from the
+    claims in the cluster, so it survives a backend restart; the lock and the reservation only keep concurrent
+    requests from sharing one free slot, and they are shared between backend replicas (core/sandbox_coordination.py).
+    `coord` is only for tests that stand in for two replicas.
+    """
+    coord = coord or coordination
+    cap = settings.AGENTSANDBOX_MAX_PODS
+    user_cap = settings.AGENTSANDBOX_MAX_PODS_PER_USER
+    if cap <= 0 and user_cap <= 0:
+        yield
+        return
+    namespace = settings.AGENTSANDBOX_NAMESPACE
+    requester = await _owner_of(label)            # outside the lock: it may be a network call
+    loop = asyncio.get_running_loop()
+    give_up = loop.time() + settings.AGENTSANDBOX_ADMIT_WAIT_SECONDS
+    while True:
+        why = ""
+        async with coord.admit():
+            claims = await _list_objects(_CLAIM_API, namespace)
+            sandboxes = {s["metadata"]["name"]: s for s in await _list_objects(_SANDBOX_API, namespace)}
+            owner_of_label = {
+                lbl: (c["metadata"].get("labels") or {}).get(_USER_LABEL)
+                for c in claims
+                if (lbl := (c["metadata"].get("labels") or {}).get(_THREAD_LABEL))
+            }
+            running = {
+                lbl
+                for c in claims
+                if (lbl := (c["metadata"].get("labels") or {}).get(_THREAD_LABEL))
+                and _has_pod(c, sandboxes.get(((c.get("status") or {}).get("sandbox") or {}).get("name", "")))
+            }
+            if label in running:
+                await coord.reserve(label)
+                break
+            others = (running | await coord.reserved()) - {label}
+            mine = {lbl for lbl in others if (owner_of_label.get(lbl) or _owners.get(lbl)) == requester} if requester else set()
+            if user_cap > 0 and len(mine) >= user_cap:
+                victim = await _pause_idlest(namespace, label, claims, sandboxes, running, requester, only_user=requester, coord=coord)
+                if victim:
+                    continue      # its Sandbox deadline is now in the past, so the next count already sees the slot
+                why = f"You already have {user_cap} sandboxes in use by other conversations right now."
+            elif cap > 0 and len(others) >= cap:
+                victim = await _pause_idlest(namespace, label, claims, sandboxes, running, requester, coord=coord)
+                if victim:
+                    continue
+                why = f"All {cap} sandboxes are in use by other conversations right now."
+            else:
+                await coord.reserve(label)
+                break
+        if loop.time() >= give_up:
+            logger.warning("sandbox limit: no slot for %s after %ss (%s)", label, settings.AGENTSANDBOX_ADMIT_WAIT_SECONDS, why)
+            raise SandboxCapacityError(f"{why} Try again in a minute.")
+        await asyncio.sleep(2)
+    try:
+        yield
+    finally:
+        await coord.unreserve(label)
+
+
+async def _touch_expiry(claim_name: str, namespace: str, label: str) -> None:
     """Push a claim's sandbox expiry out to now + TTL, reviving it if lapsed.
 
     Called before every use, which is what turns a fixed deadline into an idle
@@ -223,38 +434,42 @@ async def _touch_expiry(claim_name: str, namespace: str) -> None:
         if not name:
             return  # not bound to a sandbox yet; creation will set the deadline
 
-        await helper.custom_objects_api.patch_namespaced_custom_object(
-            namespace=namespace,
-            name=name,
-            body={
-                "spec": {
-                    "shutdownTime": _at(settings.AGENTSANDBOX_TTL_SECONDS),
-                    "shutdownPolicy": "Retain",
-                }
-            },
-            _content_type=_MERGE_PATCH,
-            **_SANDBOX_API,
-        )
-        await helper.custom_objects_api.patch_namespaced_custom_object(
-            namespace=namespace,
-            name=claim_name,
-            body={
-                "spec": {
-                    "lifecycle": {
-                        "shutdownTime": _at(settings.AGENTSANDBOX_MAX_IDLE_SECONDS),
-                        "shutdownPolicy": "Delete",
-                    }
-                }
-            },
-            _content_type=_MERGE_PATCH,
-            **_CLAIM_API,
-        )
         expired = any(
             c.get("type") == "Ready" and c.get("reason") == "SandboxExpired"
             for c in status.get("conditions") or []
         )
-        if expired:
-            await helper.wait_for_sandbox_ready(name, namespace, _CLAIM_READY_TIMEOUT)
+        # Pushing the deadline of an expired sandbox is what brings its pod back, so that is the moment it needs a slot.
+        async with _admission(label) if expired else contextlib.nullcontext():
+            await helper.custom_objects_api.patch_namespaced_custom_object(
+                namespace=namespace,
+                name=name,
+                body={
+                    "spec": {
+                        "shutdownTime": _at(settings.AGENTSANDBOX_TTL_SECONDS),
+                        "shutdownPolicy": "Retain",
+                    }
+                },
+                _content_type=_MERGE_PATCH,
+                **_SANDBOX_API,
+            )
+            await helper.custom_objects_api.patch_namespaced_custom_object(
+                namespace=namespace,
+                name=claim_name,
+                body={
+                    "spec": {
+                        "lifecycle": {
+                            "shutdownTime": _at(settings.AGENTSANDBOX_MAX_IDLE_SECONDS),
+                            "shutdownPolicy": "Delete",
+                        }
+                    }
+                },
+                _content_type=_MERGE_PATCH,
+                **_CLAIM_API,
+            )
+            if expired:
+                await helper.wait_for_sandbox_ready(name, namespace, _CLAIM_READY_TIMEOUT)
+    except SandboxCapacityError:
+        raise   # not a hiccup to log and swallow: the caller must not run in a sandbox that is not there
     except Exception:
         logger.warning("could not extend expiry for claim %s", claim_name, exc_info=True)
 
@@ -265,23 +480,33 @@ async def _get_or_create_sandbox(thread_id: str):
     label = _label_value(thread_id)
     existing = await client.list_all_sandboxes(namespace, label_selector=f"{_THREAD_LABEL}={label}")
     if existing:
-        await _touch_expiry(existing[0], namespace)
+        await _touch_expiry(existing[0], namespace, label)
         return await client.get_sandbox(existing[0], namespace)
 
-    sandbox = await client.create_sandbox(
-        warmpool=settings.AGENTSANDBOX_WARMPOOL,
-        namespace=namespace,
-        sandbox_ready_timeout=_CLAIM_READY_TIMEOUT,
-        labels={_THREAD_LABEL: label},
-    )
-    # claim_name, not sandbox_id — the latter names the Sandbox, which is a
-    # different object and would silently find no claim here.
-    await _touch_expiry(sandbox.claim_name, namespace)
+    owner = await _owner_of(label)
+    async with _admission(label):
+        sandbox = await client.create_sandbox(
+            warmpool=settings.AGENTSANDBOX_WARMPOOL,
+            namespace=namespace,
+            sandbox_ready_timeout=_CLAIM_READY_TIMEOUT,
+            labels={_THREAD_LABEL: label, **({_USER_LABEL: owner} if owner else {})},
+        )
+        # claim_name, not sandbox_id — the latter names the Sandbox, which is a
+        # different object and would silently find no claim here.
+        await _touch_expiry(sandbox.claim_name, namespace, label)
     return sandbox
 
 
 async def exec_bash(thread_id: str, command: str) -> dict:
-    """Returns {stdout, stderr, exit_code, timed_out}."""
+    """Returns {stdout, stderr, exit_code, timed_out}; plus `error` when no sandbox could be had at all."""
+    async with _using(thread_id):
+        try:
+            return await _exec_bash(thread_id, command)
+        except SandboxCapacityError as e:
+            return {"stdout": "", "stderr": str(e), "exit_code": None, "timed_out": True, "error": str(e)}
+
+
+async def _exec_bash(thread_id: str, command: str) -> dict:
     sandbox = await _get_or_create_sandbox(thread_id)
     # Some sandbox server images run the command via shlex.split() + subprocess
     # directly, not a real shell — confirmed live 2026-09-15 against
@@ -321,8 +546,9 @@ async def read_file(thread_id: str, name: str) -> tuple[bytes, str, str]:
     """
     import mimetypes
 
-    sandbox = await _get_or_create_sandbox(thread_id)
-    content = await sandbox.files.read(normalize_workspace_path(name))
+    async with _using(thread_id):
+        sandbox = await _get_or_create_sandbox(thread_id)
+        content = await sandbox.files.read(normalize_workspace_path(name))
     mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
     return content, mime, name.rsplit("/", 1)[-1]
 
@@ -336,8 +562,9 @@ async def write_file(thread_id: str, name: str, content: bytes) -> None:
     carries whole files, where the same route would turn a 5MB spreadsheet
     into ~7MB of base64 split across a hundred execs.
     """
-    sandbox = await _get_or_create_sandbox(thread_id)
-    await sandbox.files.write(normalize_workspace_path(name), content)
+    async with _using(thread_id):
+        sandbox = await _get_or_create_sandbox(thread_id)
+        await sandbox.files.write(normalize_workspace_path(name), content)
 
 
 async def reset(thread_id: str) -> None:

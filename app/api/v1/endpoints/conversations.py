@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Request
 
 from app.api.deps import CurrentUser, get_current_user
-from app.schemas.conversation import ConversationOut, ConversationCreate
+from app.schemas.conversation import ConversationOut, ConversationCreate, ForkRequest
 from app.services import conversation_service
 
 router = APIRouter()
@@ -15,6 +15,11 @@ async def list_conversations(user: CurrentUser = Depends(get_current_user)):
 @router.post("", response_model=ConversationOut)
 async def create_conversation(body: ConversationCreate, user: CurrentUser = Depends(get_current_user)):
     return await conversation_service.create_conversation(body.title, user.sub)
+
+
+@router.post("/{conversation_id}/fork", response_model=ConversationOut)
+async def fork_conversation(conversation_id: str, body: ForkRequest, req: Request, user: CurrentUser = Depends(get_current_user)):
+    return await conversation_service.fork_conversation(req.app.state.graph, conversation_id, user.sub, body.keep_turns)
 
 
 @router.get("/{conversation_id}/messages")

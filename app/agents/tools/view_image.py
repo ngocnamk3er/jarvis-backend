@@ -9,7 +9,7 @@ from langchain_core.runnables import RunnableConfig
 from PIL import Image
 from langchain_core.tools import InjectedToolCallId, tool
 
-from app.agents import vision
+from app.agents import user_models, vision
 from app.agents.tools.sandbox_errors import read_error
 from app.agents.tools.sandbox_manager import get_thread_id, normalize_workspace_path, read_file
 
@@ -53,8 +53,7 @@ async def view_image(
         pages: PDF only: the page numbers to look at, e.g. [3] or [1, 2, 3].
         label: Brief human-readable description shown to the user (e.g. "Looking at the screenshot").
     """
-    model = config.get("configurable", {}).get("model")
-    if not vision.model_supports_vision(model):
+    if not user_models.supports_vision(config.get("configurable", {}), vision.model_supports_vision):
         return (
             "Error [IMAGE_UNSUPPORTED_MODEL]: the model selected for this conversation cannot see images, "
             "and bash cannot see a picture either. "

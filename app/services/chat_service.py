@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage
 from langchain_core.messages.utils import count_tokens_approximately
@@ -12,8 +13,13 @@ from app.agents.pruning import prune_tool_results
 from app.agents.tools.sandbox_manager import reset as reset_sandbox
 from app.clients import conversation_client
 from app.core import observability
+from app.core.config import settings
+from app.core.conversation_lock import Lease, conversation_locks
+from app.core.run_control import run_control
 from app.agents.tool_output import tool_output_text
+from app.agents import user_models
 from app.schemas.chat import AVAILABLE_MODELS, DEFAULT_MODEL
+from app.services.interrupted import INTERRUPTED_NO_TEXT, INTERRUPTED_NOTE
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +261,7 @@ def _make_config(
     subagent_model: str | None = None,
     web_search: bool = True,
     unattended: bool = False,
+    model_info: dict | None = None,
 ) -> dict:
     # start_research is research done on the web too — only the tool that
     # begins a task is switched off; checking or cancelling one already
@@ -279,6 +286,9 @@ def _make_config(
             "disabled_tools": disabled,
             # Read by _bash_needs_approval (app/agents/graph.py).
             "unattended": unattended,
+            # What a model the user added looks like to the rest of the turn (user_models.info): whether it sees
+            # images, its context window, and that the server's fallback models must not answer for it. Never its key.
+            **(model_info or {}),
         },
         # Langfuse. Both are empty/absent unless tracing is configured, so
         # this is the only place in the request path that knows about it —
@@ -363,7 +373,7 @@ async def _compact_conversation(graph, config: dict, model: str | None) -> int |
     # Nothing worth condensing yet — e.g. a fresh thread, or one message so far.
     if len(old_messages) < 2:
         return None
-    window = _MODEL_CONTEXT_WINDOW.get(model or DEFAULT_MODEL, 1_000_000)
+    window = config.get("configurable", {}).get("model_context_window") or _MODEL_CONTEXT_WINDOW.get(model or DEFAULT_MODEL, 1_000_000)
     to_condense, kept = split_for_compaction(
         old_messages, int((window - RESERVED_OUTPUT_TOKENS) * COMPACT_RETAIN_RATIO))
     if len(to_condense) < 2:
@@ -436,6 +446,49 @@ async def _compact_conversation(graph, config: dict, model: str | None) -> int |
 # ---------------------------------------------------------------------------
 
 
+async def save_interrupted(graph, config: dict, text: str, thinking: str = "") -> bool:
+    """Keep what was already on screen when the user pressed Stop.
+
+    The answer being written when a run is cancelled belongs to no finished step, so LangGraph never
+    checkpointed it: after a reload it was gone, and the next turn ("that is wrong, do it this way") reached a
+    model that could not see what it had said. This adds it to the thread's messages as an AI message marked
+    `interrupted`, with the reasoning streamed so far (shown on the page again after a reload; it is not sent back
+    to the model). A tool call cut off while its arguments were still being written is dropped.
+
+    Returns whether a message was added. Nothing is added when nothing had streamed, or when the state already
+    ends in a finished answer (the run completed an instant before the cancellation arrived).
+    """
+    if not text.strip() and not thinking.strip():
+        return False
+    state = await graph.aget_state(config)
+    messages = state.values.get("messages", [])
+    if messages and isinstance(messages[-1], AIMessage) and not messages[-1].tool_calls:
+        return False
+    extra: dict = {"interrupted": True}
+    if thinking.strip():
+        extra["reasoning"] = thinking
+    # as_node left out, as for the context_tokens write below: naming the model node would schedule its whole
+    # after_model middleware chain again (see the long comment in _run_graph).
+    content = text + INTERRUPTED_NOTE if text.strip() else INTERRUPTED_NO_TEXT
+    await graph.aupdate_state(config, {"messages": [AIMessage(content=content, additional_kwargs=extra)]})
+    return True
+
+
+async def prune_thread(graph, thread_id: str) -> None:
+    """Delete the thread's checkpoints except the newest, with the writes and blobs only they used.
+
+    Nothing in the app reads checkpoint history, only the head (aget_state / aupdate_state), and every turn used
+    to leave one checkpoint per step behind, each with a full copy of the message list. Best effort: a failed
+    prune only leaves old rows in place.
+    """
+    if not settings.CHECKPOINT_KEEP_LATEST or getattr(graph, "checkpointer", None) is None:
+        return
+    try:
+        await graph.checkpointer.aprune([thread_id], strategy="keep_latest")
+    except Exception:  # noqa: BLE001
+        logger.warning("could not prune checkpoints of %s", thread_id, exc_info=True)
+
+
 class ChatService:
     def __init__(self) -> None:
         self._tool_start = ToolStartEventHandler()
@@ -445,9 +498,48 @@ class ChatService:
         # from a separate request without touching the ASGI/StreamingResponse
         # task that's yielding SSE lines for it.
         self._active_runs: dict[str, asyncio.Task] = {}
+        # thread_id -> when that run began. Lets a cancel request that is only picked up some seconds after it was
+        # made (see core/run_control.py) tell that it was meant for an earlier run of the same conversation.
+        self._run_started: dict[str, float] = {}
+
+    @staticmethod
+    async def guarded(lease: Lease, stream):
+        """Run `stream` (one of stream/resume/resume_clarify) while holding the conversation's lease."""
+        lease.start_heartbeat()
+        try:
+            async for chunk in stream:
+                yield chunk
+        finally:
+            lease.release()
+
+    def active_runs(self) -> dict[str, float]:
+        """{thread_id: when it began} for the runs going in this process."""
+        return {t: self._run_started.get(t, 0.0) for t, task in self._active_runs.items() if not task.done()}
+
+    async def drain(self, timeout: float) -> int:
+        """Wait up to `timeout` seconds for the runs going in this process to finish (shutdown: a replica that is being
+        replaced stops taking requests but lets its runs end). How many were still going at the deadline."""
+        tasks = [t for t in self._active_runs.values() if not t.done()]
+        if not tasks:
+            return 0
+        logger.info("waiting for %d chat run(s) to finish before shutting down", len(tasks))
+        _, pending = await asyncio.wait(tasks, timeout=timeout)
+        if pending:
+            logger.warning("shutting down with %d chat run(s) still going", len(pending))
+        return len(pending)
 
     async def stop(self, thread_id: str) -> bool:
-        """Cancel the in-flight run for this thread, if any.
+        """Stop the run of this conversation wherever it is going: here, or in the replica that holds its lock (it is
+        told through Redis, see core/run_control.py). False when nothing is running it."""
+        if await self.stop_local(thread_id):
+            return True
+        owner = await conversation_locks.owner_of(thread_id)
+        if owner and owner != run_control.instance:
+            return await run_control.cancel_remote("run", thread_id, owner)
+        return False
+
+    async def stop_local(self, thread_id: str) -> bool:
+        """Cancel the in-flight run for this thread, if this process has it.
 
         Cancelling the asyncio task stops token/tool-event streaming
         immediately. It does NOT, by itself, stop a `bash` call already in
@@ -580,6 +672,10 @@ class ChatService:
         # last one reflects the fullest/most current view of the thread.
         last_context_tokens: int | None = None
         stopped = False
+        # The words (and reasoning) the top-level model has streamed in the call that is still going. Cleared when
+        # a call starts and when it ends (a finished call is in the checkpoint by itself); what is left when the user
+        # stops the run is what save_interrupted keeps.
+        partial = {"text": "", "thinking": ""}
 
         # Generated and sent before the run has produced anything, not read
         # back from Langfuse afterward — trace_as() (below) pins the actual
@@ -600,13 +696,18 @@ class ChatService:
                 # only supports the sync protocol, even though everything
                 # inside this block is async. See trace_as's docstring.
                 with observability.trace_as(trace_id):
-                    async for ev in graph.astream_events(graph_input, config=config, version="v2"):
+                    async for ev in graph.astream_events(
+                        graph_input, config=config, version="v2", durability=settings.CHECKPOINT_DURABILITY
+                    ):
                         await queue.put(ev)
             finally:
                 await queue.put(_DONE)
 
         drive_task = asyncio.ensure_future(_drive())
         self._active_runs[thread_id] = drive_task
+        self._run_started[thread_id] = time.time()
+        # The browser may go away mid-run without stopping it; the conversation stays locked until it is done.
+        conversation_locks.hold_until(thread_id, drive_task)
 
         try:
             while True:
@@ -633,6 +734,10 @@ class ChatService:
                     else:
                         results = self._handle_token(event, parser, viz_indexes) or None
                         for r in list(results or ()):
+                            if r.get("type") == "token":
+                                partial["text"] += r["content"]
+                            elif r.get("type") == "thinking_token":
+                                partial["thinking"] += r["content"]
                             if r.get("type") == "usage":
                                 last_context_tokens = r["total_tokens"]
                                 # Tell the frontend's gauge now, not at the end
@@ -647,6 +752,8 @@ class ChatService:
                                     await conversation_client.set_context_tokens(thread_id, last_context_tokens)
                                 except Exception:
                                     logger.warning("could not save context tokens", exc_info=True)
+                elif event["event"] in ("on_chat_model_start", "on_chat_model_end") and not task_run_id:
+                    partial["text"] = partial["thinking"] = ""
                 elif event["event"] == "on_tool_start":
                     results = self._tool_start.handle(event, task_run_id=task_run_id)
                     if task_run_id:
@@ -744,12 +851,21 @@ class ChatService:
         finally:
             if self._active_runs.get(thread_id) is drive_task:
                 del self._active_runs[thread_id]
+                self._run_started.pop(thread_id, None)
 
         if stopped:
+            try:
+                await save_interrupted(graph, config, partial["text"], partial["thinking"])
+            except Exception:  # noqa: BLE001 — losing the partial answer must not break the stop itself
+                logger.warning("could not save the interrupted answer", exc_info=True)
             yield f"data: {json.dumps({'type': 'stopped'})}\n\n"
         else:
             for line in hitl_lines:
                 yield f"data: {line}\n\n"
+        # Last, after every state write of this turn (save_interrupted, context_tokens); and not while another
+        # request has a run going on the same thread, which has checkpoints of its own in flight.
+        if thread_id not in self._active_runs:
+            await prune_thread(graph, thread_id)
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     async def stream(
@@ -764,7 +880,13 @@ class ChatService:
         web_search: bool = True,
         unattended: bool = False,
     ):
-        context_window = _MODEL_CONTEXT_WINDOW.get(model)
+        try:
+            model_info = await user_models.info(user_id, model)
+        except user_models.UserModelError as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+        context_window = model_info.get("model_context_window") or _MODEL_CONTEXT_WINDOW.get(model)
         if context_window:
             conv = await conversation_client.get_conversation(thread_id)
             if conv:
@@ -779,7 +901,7 @@ class ChatService:
                 threshold = compact_threshold(context_window)
                 if conv.context_tokens + new_tokens_estimate > threshold:
                     compact_config = _make_config(
-                        thread_id, user_id, model=model, subagent_model=subagent_model
+                        thread_id, user_id, model=model, subagent_model=subagent_model, model_info=model_info
                     )
                     new_total = await _compact_conversation(graph, compact_config, model)
                     if new_total is not None:
@@ -800,7 +922,7 @@ class ChatService:
                 return
 
         config = _make_config(thread_id, user_id, thinking_effort, model, subagent_model,
-                              web_search, unattended)
+                              web_search, unattended, model_info)
         async for chunk in self._run_graph(
             {"messages": [HumanMessage(content=content)]}, config, graph
         ):
@@ -820,7 +942,14 @@ class ChatService:
         expects a list of one decision dict per pending action_request —
         the same decision ("approve"/"reject") is applied to every pending
         action in this batch (no per-action granularity in the UI)."""
-        config = _make_config(thread_id, user_id, model=model, subagent_model=subagent_model, web_search=web_search)
+        try:
+            model_info = await user_models.info(user_id, model)
+        except user_models.UserModelError as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+        config = _make_config(thread_id, user_id, model=model, subagent_model=subagent_model, web_search=web_search,
+                              model_info=model_info)
 
         # Count pending action_requests so we send exactly N decisions
         n = 1
@@ -851,7 +980,14 @@ class ChatService:
         resume value is the raw answer string itself — ask_user's interrupt()
         call returns exactly whatever value Command(resume=...) carries, since
         it's a bare langgraph interrupt(), not a decisions-list protocol."""
-        config = _make_config(thread_id, user_id, model=model, subagent_model=subagent_model, web_search=web_search)
+        try:
+            model_info = await user_models.info(user_id, model)
+        except user_models.UserModelError as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+        config = _make_config(thread_id, user_id, model=model, subagent_model=subagent_model, web_search=web_search,
+                              model_info=model_info)
         async for chunk in self._run_graph(Command(resume=answer), config, graph):
             yield chunk
 

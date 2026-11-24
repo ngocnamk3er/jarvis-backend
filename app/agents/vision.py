@@ -30,6 +30,7 @@ from typing import Any, Awaitable, Callable
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 from langchain_core.messages import HumanMessage, ToolMessage
 
+from app.agents import user_models
 from app.schemas.chat import AVAILABLE_MODELS, DEFAULT_MODEL
 
 logger = logging.getLogger(__name__)
@@ -297,7 +298,7 @@ class ViewedImagesMiddleware(AgentMiddleware):
             config = get_config().get("configurable", {})
         except RuntimeError:
             return request
-        if not model_supports_vision(config.get("model")):
+        if not user_models.supports_vision(config, model_supports_vision):
             return request
 
         messages = list(request.messages)
@@ -400,10 +401,10 @@ class VisionNoticeMiddleware(AgentMiddleware):
         try:
             from langgraph.config import get_config
 
-            model = get_config().get("configurable", {}).get("model")
+            configurable = get_config().get("configurable", {})
         except RuntimeError:
             return request
-        if model_supports_vision(model):
+        if user_models.supports_vision(configurable, model_supports_vision):
             return request
         from deepagents.middleware._utils import append_to_system_message
 

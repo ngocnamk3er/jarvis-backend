@@ -43,6 +43,7 @@ from langgraph.types import Command
 from app.agents.research_graph import build_research_graph
 from app.core import observability
 from app.core.config import settings
+from app.core.run_control import run_control
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +234,16 @@ class ResearchRunner:
         return task_id
 
     async def _run(self, task_id: str, description: str, config: dict) -> None:
+        # Listed as running for the other replicas while it goes, and its end recorded after (core/run_control.py), so
+        # a status check or a cancel that lands on another replica gets the right answer.
+        await run_control.track_research(task_id)
+        try:
+            await self._run_inner(task_id, description, config)
+        finally:
+            job = self._jobs.get(task_id)
+            await run_control.untrack_research(task_id, job.status if job else "error", job.error if job else None)
+
+    async def _run_inner(self, task_id: str, description: str, config: dict) -> None:
         # `_jobs[task_id]` is set right after create_task() and this coroutine
         # only starts at its first await, so it is there by the time it's read.
         try:
@@ -246,6 +257,18 @@ class ResearchRunner:
             self._jobs[task_id].error = f"{type(e).__name__}: {str(e)[:300]}"
         else:
             self._jobs[task_id].status = "success"
+        if self._jobs[task_id].status != "cancelled":
+            await self._prune_checkpoints(task_id)
+
+    async def _prune_checkpoints(self, task_id: str) -> None:
+        """A finished task is only ever read at its head (status / result), so its per-step checkpoints, kept for
+        the sake of live progress checks, can go. Best effort."""
+        if not settings.CHECKPOINT_KEEP_LATEST or self._graph.checkpointer is None:
+            return
+        try:
+            await self._graph.checkpointer.aprune([self.thread_id(task_id)], strategy="keep_latest")
+        except Exception:  # noqa: BLE001
+            logger.warning("could not prune checkpoints of research task %s", task_id, exc_info=True)
 
     def _prune(self) -> None:
         finished = sorted((j.seq, tid) for tid, j in self._jobs.items() if j.status != "running")
@@ -261,6 +284,25 @@ class ResearchRunner:
         job.task.cancel()
         return True
 
+    async def cancel_anywhere(self, task_id: str) -> bool:
+        """Stop a task wherever it runs: here, or in the replica that has it (asked through Redis)."""
+        if self.cancel(task_id):
+            return True
+        record = await run_control.research_record(task_id)
+        if record and record["alive"] and record["owner"] and record["owner"] != run_control.instance:
+            return await run_control.cancel_remote("research", task_id, record["owner"])
+        return False
+
+    async def global_running(self) -> int:
+        """Tasks running in all replicas together (what the limit counts), or just here without Redis."""
+        return max(self.running(), len(await run_control.research_running()))
+
+    async def drain(self, timeout: float) -> None:
+        """Shutdown: give the tasks running here up to `timeout` seconds to finish before shutdown() cancels them."""
+        tasks = [j.task for j in self._jobs.values() if not j.task.done()]
+        if tasks:
+            await asyncio.wait(tasks, timeout=timeout)
+
     async def inspect(self, task_id: str, recorded: str) -> tuple[str, str | None, dict]:
         """(status, error, thread values) for a task.
 
@@ -274,6 +316,14 @@ class ResearchRunner:
         job = self._jobs.get(task_id)
         if job is not None:
             return job.status, job.error, values
+        # Not in this process. Another replica may be running it, or have run it.
+        record = await run_control.research_record(task_id)
+        if record is not None:
+            if record["status"] != "running":
+                return record["status"], record["error"], values
+            if record["alive"]:
+                return "running", None, values
+            # "running" but nobody renews it any more: its replica is gone. Judged like a restarted process, below.
         if recorded in _SETTLED:
             return recorded, None, values
         return ("success" if _finished_cleanly(values, snap.next) else "interrupted"), None, values
@@ -382,6 +432,12 @@ async def start_research(description: str, runtime: ToolRuntime) -> str | Comman
     if not research_runner.ready:
         return "Background research is not available right now."
     cfg = (runtime.config or {}).get("configurable", {})
+    running = await research_runner.global_running()
+    if running >= settings.BACKGROUND_RESEARCH_MAX_RUNNING:
+        return (
+            f"{running} research tasks are already running (the limit is "
+            f"{settings.BACKGROUND_RESEARCH_MAX_RUNNING}). Wait for one to finish or cancel one."
+        )
     try:
         task_id = research_runner.start(
             description, {**cfg, "parent_thread_id": cfg.get("thread_id")}
@@ -448,7 +504,7 @@ async def cancel_research(task_id: str, runtime: ToolRuntime) -> str | Command:
     tracked = _tracked(task_id, runtime)
     if isinstance(tracked, str):
         return tracked
-    if not research_runner.cancel(tracked["task_id"]):
+    if not await research_runner.cancel_anywhere(tracked["task_id"]):
         return f"Research task {tracked['task_id']} is not running, so there is nothing to cancel."
     return _command(
         runtime, f"Cancelled research task {tracked['task_id']}.", _updated(tracked, "cancelled")

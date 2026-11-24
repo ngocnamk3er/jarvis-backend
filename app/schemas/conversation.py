@@ -14,3 +14,8 @@ class ConversationOut(BaseModel):
 
 class ConversationCreate(BaseModel):
     title: str = "New conversation"
+
+
+class ForkRequest(BaseModel):
+    # How many turns (a user message and the answer to it) the new conversation keeps from this one.
+    keep_turns: int

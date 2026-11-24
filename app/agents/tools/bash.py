@@ -104,6 +104,8 @@ async def bash(command: str, label: str, config: RunnableConfig) -> str:
 
     result = await exec_bash(thread_id, command)
 
+    if result.get("error"):
+        return f"Error: no sandbox available. {result['error']}"
     if result.get("timed_out"):
         return "Error: command timed out (300s limit) and was killed."
 

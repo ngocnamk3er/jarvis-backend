@@ -18,6 +18,15 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = "postgresql://jarvis:jarvis@localhost:5433/jarvis"
 
+    # Redis for the per-conversation run lock (app/core/conversation_lock.py). Empty = an in-process lock,
+    # which is all one backend replica needs; it also is the fallback if this Redis cannot be reached.
+    REDIS_URL: str = ""
+
+    # Shutdown (a rolling update, a scale-down): how long a replica that is being replaced waits for the chat runs and
+    # research tasks it has to finish. The pod's terminationGracePeriodSeconds must be longer, since uvicorn first waits
+    # for open connections (the streams of runs the browser is still attached to) and only then drains the rest.
+    SHUTDOWN_DRAIN_SECONDS: int = 600
+
     # jarvis-conversation-service — owns the conversations/subagent_traces
     # tables since the Chapter 2 decomposition; see app/clients/conversation_client.py.
     CONVERSATION_SERVICE_URL: str = "http://localhost:8001"
@@ -67,10 +76,34 @@ class Settings(BaseSettings):
     # where expiry cascades down and removes the volume too. Also pushed
     # forward on every use, so it measures abandonment rather than age.
     AGENTSANDBOX_MAX_IDLE_SECONDS: int = 604_800  # 7 days
+    # A ceiling on how many conversations may have a sandbox *pod* at the same time (the one spare pod the warm pool
+    # keeps ready is not counted; paused sandboxes, whose pod is gone and only the volume is kept, are not either).
+    # Past it a conversation that needs a pod first makes room by pausing the sandbox that has been idle the longest
+    # (never one that is running something, nor one idle for less than EVICT_MIN_IDLE), and if nothing can be paused
+    # it waits up to ADMIT_WAIT for a slot before the tool call fails with a "sandbox capacity" error. 0 = no ceiling.
+    # See sandbox_manager._admission.
+    AGENTSANDBOX_MAX_PODS: int = 10
+    # How many sandbox pods one user may have at once, across their conversations. Past it a new one is made room for
+    # by pausing that user's own idlest sandbox, so nobody can take the shared ceiling for themselves by opening many
+    # conversations. 0 = no per-user limit. See sandbox_manager._admission.
+    AGENTSANDBOX_MAX_PODS_PER_USER: int = 3
+    AGENTSANDBOX_ADMIT_WAIT_SECONDS: int = 45
+    AGENTSANDBOX_EVICT_MIN_IDLE_SECONDS: int = 120
 
     # Background research: start_research/check_research/cancel_research/
     # list_research, which run the research subagent as a task that outlives the
     # chat turn (app/agents/async_research.py). False leaves the tools out.
+    # Admission control (app/core/load_shed.py): past this many requests in flight in this process, the next one is
+    # refused at once with 503 + Retry-After instead of queueing behind the rest. DEFAULT covers everything quick; 30
+    # comes from the throughput curve on the test cluster (it stops rising at ~10 concurrent, so ~30 keeps the median
+    # near 250 ms). CHAT is one long-lived stream per run and is counted apart so it cannot crowd the quick requests
+    # out; 20 is a guess, nothing measured the cost of a run. Both are per process: with more workers or replicas the
+    # total is that many times as much. 0 = no limit for that class.
+    LOAD_SHED_ENABLED: bool = True
+    LOAD_SHED_MAX_INFLIGHT: int = 30
+    LOAD_SHED_MAX_INFLIGHT_CHAT: int = 20
+    LOAD_SHED_RETRY_AFTER_SECONDS: int = 1
+
     BACKGROUND_RESEARCH: bool = True
     # How many background research tasks may run at once in this process. Each
     # is a full search/fetch loop of LLM calls, so this bounds what one user
@@ -119,6 +152,19 @@ class Settings(BaseSettings):
     # Comma-separated hosts exempt from the public-address rule in
     # app/agents/mcp_guard.py — e.g. an MCP server run inside the cluster.
     MCP_USER_ALLOWED_HOSTS: str = ""
+
+    # Models users add themselves (app/agents/user_models.py). Their API keys are encrypted with
+    # MCP_SECRET_KEY (the same Fernet key the MCP headers use); without it only OpenRouter models
+    # (which use the server's key) can be added. Hosts to allow past the public-address check
+    # reuse MCP_USER_ALLOWED_HOSTS.
+    USER_MODELS_ENABLED: bool = True
+    USER_MODELS_MAX: int = 20
+
+    # LangGraph checkpoints. "exit" writes one checkpoint when a chat turn ends instead of one per step;
+    # KEEP_LATEST then deletes the thread's older ones once the turn is over (nothing here reads history).
+    # Not applied to the background research tasks, whose progress is read while they run.
+    CHECKPOINT_DURABILITY: str = "exit"
+    CHECKPOINT_KEEP_LATEST: bool = True
 
     class Config:
         env_file = ".env"

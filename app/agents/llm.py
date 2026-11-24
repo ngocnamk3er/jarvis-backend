@@ -3,6 +3,7 @@ from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.messages import AIMessageChunk
 from langchain_community.cache import SQLiteCache
 from langchain_core.globals import set_llm_cache
+import hashlib
 
 from app.core.config import settings
 
@@ -42,6 +43,14 @@ class ThinkingChatOpenAI(ChatOpenAI):
     # "model" when "subagent_model" isn't set, so subagents still inherit
     # the main model by default until the user explicitly overrides it.
     is_subagent_model: bool = False
+
+    # Whether to send OpenRouter's `reasoning` body field. An own endpoint (OpenAI, vLLM...) may reject a body field it
+    # does not know, so it is off there unless the user asked for it.
+    send_reasoning: bool = True
+
+    # True for the instance that talks to a user's own endpoint (see _delegate_for): it uses its own model and
+    # endpoint, never the per-turn override, and is not a fallback.
+    delegate: bool = False
 
     def _configurable(self) -> dict:
         """LangGraph's per-run configurable, or {} outside a run."""
@@ -84,7 +93,7 @@ class ThinkingChatOpenAI(ChatOpenAI):
 
     def _get_request_payload(self, input_, *, stop=None, **kwargs):
         effort = self._configurable().get("thinking_effort", "high")
-        if "extra_body" not in kwargs:
+        if "extra_body" not in kwargs and self.send_reasoning:
             kwargs["extra_body"] = {"reasoning": {"effort": effort, "exclude": False}}
 
         model_override = self._model_override()
@@ -92,6 +101,46 @@ class ThinkingChatOpenAI(ChatOpenAI):
             kwargs["model"] = model_override
 
         return super()._get_request_payload(input_, stop=stop, **kwargs)
+
+    # ── a user's own model ──────────────────────────────────────────────────
+    #
+    # When the turn's model is `user:<uuid>`, the call is handed to another instance built for that model's name,
+    # endpoint and key. The key is looked up here, at call time, not carried in the run's config.
+
+    async def _custom_for_turn(self):
+        """The user's model this call is for, or None. Raises if the chosen model is gone or unreadable."""
+        from app.agents import user_models
+
+        override = self._model_override()
+        if not user_models.is_user_model(override):
+            return None
+        cfg = self._configurable()
+        custom = await user_models.resolve(cfg.get("user_id") or "", override)
+        if custom is None:
+            raise user_models.UserModelError("The model you picked was removed. Choose another one.")
+        return custom
+
+    def _refuse_fallback(self) -> None:
+        """A fallback model must not answer a turn the user put on their own endpoint."""
+        if not self.honor_model_override and not self.delegate and self._configurable().get("no_fallback"):
+            raise RuntimeError("Your own endpoint failed; the server's fallback models are not used for it.")
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        self._refuse_fallback()
+        custom = await self._custom_for_turn()
+        if custom is None:
+            async for chunk in super()._astream(messages, stop=stop, run_manager=run_manager, **kwargs):
+                yield chunk
+            return
+        async for chunk in _delegate_for(custom)._astream(messages, stop=stop, run_manager=run_manager, **kwargs):
+            yield chunk
+
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        self._refuse_fallback()
+        custom = await self._custom_for_turn()
+        if custom is None:
+            return await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+        return await _delegate_for(custom)._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
 
     def _convert_chunk_to_generation_chunk(
         self,
@@ -113,6 +162,31 @@ class ThinkingChatOpenAI(ChatOpenAI):
                 gen_chunk.message.additional_kwargs["reasoning"] = reasoning
 
         return gen_chunk
+
+
+_delegates: dict[tuple, "ThinkingChatOpenAI"] = {}
+
+
+def _delegate_for(custom) -> "ThinkingChatOpenAI":
+    """The instance that calls a user's model; kept so its HTTP clients are reused between turns."""
+    key = (custom.base_url, hashlib.sha256(custom.api_key.encode()).hexdigest(), custom.model, custom.send_reasoning)
+    llm = _delegates.get(key)
+    if llm is None:
+        llm = ThinkingChatOpenAI(
+            model=custom.model,
+            api_key=custom.api_key or "none",          # some servers (Ollama) want no key, the client wants a string
+            base_url=custom.base_url,
+            streaming=True,
+            temperature=0,
+            stream_usage=True,
+            honor_model_override=False,
+            delegate=True,
+            send_reasoning=custom.send_reasoning,
+        )
+        if len(_delegates) > 64:
+            _delegates.clear()
+        _delegates[key] = llm
+    return llm
 
 
 def build_llm(

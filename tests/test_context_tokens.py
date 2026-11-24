@@ -20,7 +20,7 @@ def _model_call(total: int) -> dict:
 class FakeGraph:
     """Two model calls, then a tool that never returns — the user hits Stop."""
 
-    async def astream_events(self, graph_input, config=None, version=None):
+    async def astream_events(self, graph_input, config=None, version=None, **kw):
         yield _model_call(1000)
         yield _model_call(2500)
         await asyncio.sleep(3600)

@@ -1,0 +1,95 @@
+# Backend chạy nhiều pod
+
+Trạng thái: **đã làm và triển khai lên cluster test (image `ext-ui49`), chưa commit.** Cập nhật 2026-11-24.
+Backend vẫn để 1 pod. Chạy được từ 2 pod trở lên khi có `REDIS_URL`.
+
+## 1. Cách làm
+
+Mọi pod backend **giống hệt nhau**: mỗi pod tự chạy lượt chat của nó và tự gửi chữ về trình duyệt, như trước giờ. Không có pod web riêng và pod worker riêng, không có hàng đợi.
+
+Điều cần xử lý là những thứ trước đây chỉ nằm trong bộ nhớ của từng pod. Chúng được đưa vào Redis theo cách nhẹ nhất, mà không di chuyển lượt chạy nào:
+
+| Thứ | Trước | Nay |
+|---|---|---|
+| Nút Dừng | Chỉ hủy được lượt chạy của pod nhận request | Gửi lệnh hủy tới đúng pod đang chạy |
+| Nghiên cứu nền | Trạng thái và lệnh hủy chỉ có ở pod đã bắt đầu | Đăng ký trong Redis, pod nào cũng xem và hủy được |
+| Trần sandbox | Mỗi pod tự đếm | Khóa xếp chỗ, đặt chỗ, đang dùng nằm trong Redis |
+| Cập nhật, scale xuống | Pod bị tắt sau 30 giây, cắt lượt chat | Pod chờ lượt chat xong rồi mới tắt (tối đa 900 giây) |
+
+## 2. Kiến trúc
+
+```
+Trình duyệt ──▶ Ingress ──▶ Pod backend A ─┐
+                        └─▶ Pod backend B ─┤── Redis (khóa cuộc trò chuyện, kênh điều khiển,
+                                           │          sổ nghiên cứu nền, xếp chỗ sandbox)
+                                           ├── Postgres (lịch sử, checkpoint)
+                                           └── API Kubernetes (SandboxClaim)
+```
+
+## 3. Dữ liệu trong Redis
+
+Lịch sử hội thoại **không** nằm trong Redis; nó vẫn ở Postgres. Redis chỉ giữ trạng thái ngắn hạn, mọi mục đều có hạn dùng.
+
+| Key | Kiểu | Nội dung | Hạn dùng |
+|---|---|---|---|
+| `jarvis:conv-lock:{thread}` | String | Khóa cuộc trò chuyện. Giá trị là `<tên pod>-<pid>-<hậu tố>:<chuỗi ngẫu nhiên>`, nên khóa cho biết pod nào đang chạy | 30 giây, gia hạn bằng heartbeat |
+| `jarvis:ctl:{instance}` | Kênh Pub/Sub | Lệnh hủy gửi tới một pod | không lưu |
+| `jarvis:cancel:run:{thread}`, `jarvis:cancel:research:{task}` | String | Khóa hủy (thời điểm yêu cầu), lưới an toàn nếu lỡ tin Pub/Sub | 30 giây |
+| `jarvis:research:running` | ZSET | Các tác vụ nghiên cứu đang chạy, pod chủ gia hạn mỗi 10 giây | 30 giây sau lần gia hạn cuối |
+| `jarvis:research:{task}` | Hash | Chủ của tác vụ và trạng thái cuối | 1 ngày |
+| `jarvis:sbx:admit` | String | Khóa xếp chỗ sandbox (một quyết định một lúc) | 20 giây |
+| `jarvis:sbx:reserved`, `jarvis:sbx:inuse` | ZSET | Sandbox đang được đặt chỗ, sandbox đang có lệnh chạy | 30 giây sau lần gia hạn cuối |
+
+## 4. Các luồng
+
+### Dừng một lượt chat ở pod khác
+1. Request Dừng rơi vào pod B. Pod B tìm trong bộ nhớ của nó, không thấy lượt nào.
+2. Pod B đọc khóa cuộc trò chuyện trong Redis, thấy chủ là pod A.
+3. Pod B ghi khóa hủy rồi gửi tin vào kênh của pod A.
+4. Pod A (đã đăng ký kênh lúc khởi động) nhận tin, hủy lượt chạy và dọn sandbox như khi Dừng ở chính nó. Luồng về trình duyệt kết thúc bằng `stopped` rồi `done`.
+5. Nếu pod A lỡ tin (kết nối đứt thoáng qua), nó đọc khóa hủy trong vòng 3 giây và bỏ qua khóa nào cũ hơn lúc lượt chạy bắt đầu, để một lệnh Dừng cũ không hủy nhầm lượt mới.
+
+### Nghiên cứu nền
+Tác vụ ghi vào `jarvis:research:running` và hash của nó khi bắt đầu và cập nhật trạng thái cuối khi xong. Pod khác hỏi trạng thái thì đọc từ đó: đang chạy thì trả "đang chạy", đã xong thì trả đúng kết quả, và nếu chủ đã chết (không gia hạn nữa) thì coi như bị gián đoạn. Hủy từ pod khác đi theo đường Pub/Sub như trên. Trần `BACKGROUND_RESEARCH_MAX_RUNNING` tính trên tổng các pod.
+
+### Sandbox
+Số pod sandbox vẫn đếm từ SandboxClaim trên cluster. Ba thứ cluster không biết được chia sẻ qua Redis: khóa xếp chỗ (hai pod không cùng thấy chỗ cuối), đặt chỗ (sandbox vừa được phép tạo mà chưa hiện), và đang dùng (pod này không tạm dừng sandbox pod kia đang chạy lệnh). Cuộc trò chuyện đang chạy lấy từ chính các khóa cuộc trò chuyện.
+
+### Cập nhật phiên bản, scale xuống
+1. Kubernetes xóa pod; `preStop` chờ 5 giây để Ingress ngừng gửi request mới.
+2. SIGTERM: uvicorn ngừng nhận kết nối mới và **chờ các luồng đang mở kết thúc**. Lượt chat vẫn chạy bình thường.
+3. Sau đó ứng dụng chờ nốt các lượt không còn trình duyệt và các tác vụ nghiên cứu, tối đa `SHUTDOWN_DRAIN_SECONDS` (600 giây). Trong lúc chờ, lệnh Dừng vẫn tới được pod.
+4. Thoát. Nếu quá `terminationGracePeriodSeconds` (900 giây) thì Kubernetes buộc tắt.
+
+### Scale lên
+Pod mới chỉ nhận các request mới. Lượt chạy ở các pod cũ không bị ảnh hưởng.
+
+### Redis không dùng được
+Mọi bước trên đều làm theo khả năng: lỗi Redis được ghi log (không quá 1 lần mỗi 30 giây) và mỗi pod quyết định theo những gì nó tự biết, tức hành vi của một pod. Với 2 pod thì khi đó Dừng chéo pod không hoạt động.
+
+## 5. Cấu hình
+
+- `REDIS_URL` (có sẵn): bắt buộc khi chạy hơn 1 pod.
+- `SHUTDOWN_DRAIN_SECONDS` (mặc định 600): thời gian chờ lượt chạy và tác vụ nghiên cứu khi tắt.
+- `jarvis-deploy/backend/base/backend.yaml`: `terminationGracePeriodSeconds: 900`, `preStop` 5 giây. Số `replicas` vẫn là 1.
+
+## 6. Đã kiểm chứng
+
+- Test tự động: 328 đạt khi không có Redis, 383 đạt khi có Redis thật (`REDIS_TEST_URL`).
+- Trên cluster với 2 pod, chat thật:
+  - Lượt chat chạy ở pod 1, Dừng gửi vào pod 2: trả `{"stopped": true}` trong 30 ms, luồng ở pod 1 kết thúc bằng `stopped` rồi `done`.
+  - Xóa pod giữa lúc chạy một bài luận 3.000 từ: lượt chat vẫn xong bình thường 70 giây sau khi pod bị xóa (1.299 mẩu chữ, có `done`, không lỗi), rồi pod mới biến mất. Mặc định cũ chỉ cho 30 giây.
+  - Xếp chỗ sandbox qua Redis: chuỗi lệnh đúng thiết kế.
+- Chưa thử trực tiếp trên cluster: kiểm tra và hủy tác vụ nghiên cứu từ pod khác (chỉ có test tự động).
+
+## 7. Giới hạn còn lại
+
+- **Pod chết đột ngột thì mất lượt chat đang chạy trên nó**, và trình duyệt không nối lại được sau khi mất kết nối. Đây là giới hạn của việc không có hàng đợi.
+- Khi hai pod cùng bắt đầu một tác vụ nghiên cứu đúng một lúc, tổng có thể vượt trần 1 tác vụ.
+- Khóa xếp chỗ sandbox hết hạn sau 20 giây và không tự gia hạn: một quyết định chậm hơn thế có thể để pod khác chen vào.
+- Chặn tải (503) vẫn tính theo từng pod.
+- Redis trên cluster hiện 32 MB, không lưu đĩa. Lượng dữ liệu ở đây rất nhỏ nên đủ, nhưng Redis khởi động lại thì mất các mục đặt chỗ và khóa đang giữ (khóa tự lập lại nhờ heartbeat).
+
+## 8. Phương án nặng hơn, đã cân nhắc và không làm
+
+Tách pod web và pod worker, đưa lượt chat vào hàng đợi Redis Streams và đẩy từng mẩu chữ qua Redis. Cách này giữ được lượt chat khi pod chết và cho trình duyệt nối lại, nhưng phức tạp hơn nhiều (thêm hàng đợi, luồng sự kiện, chính sách chạy lại, Redis phải lớn hơn và bền hơn) và nằm ngoài yêu cầu scale. Đã từng viết một bản chạy được rồi gỡ bỏ ngày 2026-11-24. Chỉ cân nhắc lại nếu cần chịu được pod chết đột ngột hoặc cần trình duyệt nối lại.

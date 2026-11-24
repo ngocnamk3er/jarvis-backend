@@ -175,6 +175,10 @@ spec:
           periodSeconds: 10
         resources:
           requests: {cpu: "250m", memory: "512Mi", ephemeral-storage: "512Mi"}
+          # The limits are what stops one runaway command (pandas on a huge file, a pip install gone wrong) from
+          # taking the whole node: with requests alone the scheduler counts 512Mi per sandbox while the pod may
+          # use all the node's memory. See "Resource limits" below.
+          limits: {cpu: "1", memory: "2Gi", ephemeral-storage: "2Gi"}
       restartPolicy: "OnFailure"
   volumeClaimTemplatesPolicy: Overrides
   volumeClaimTemplates:
@@ -300,6 +304,64 @@ Editing the template does not reach sandboxes that already exist (see "Verify" b
 **unclaimed warm-pool** sandboxes so the pool recreates them, and leave every sandbox that has a
 `SandboxClaim` alone, since those belong to a conversation and carry its files. A conversation's
 sandbox keeps the image it was created with.
+
+### Resource limits
+
+The template sets `requests` (250m CPU, 512Mi memory) **and `limits`** (1 CPU, 2Gi memory, 2Gi ephemeral
+storage). Requests alone made the pod Burstable with no ceiling: the scheduler reserved 512Mi but a command
+could take every byte the node had, which is how 65 sandboxes rebuilt at once took the node to 99% memory.
+
+- A process that goes past the **memory** limit is OOM-killed, and the container restarts (`restartPolicy:
+  OnFailure`). `/workspace` is on the PVC, so files survive; only the running command is lost.
+- Going past the **ephemeral-storage** limit (the container's writable layer, `/tmp`) evicts the pod, with the
+  same result. `/workspace` is a PVC and is not counted.
+- The limits are deliberately loose (2Gi is four times the request). They guard against a runaway, not against
+  ordinary pandas work; tighten them if the node is still crowded, loosen them if legitimate jobs get killed.
+
+An existing cluster gets them with a patch, then the unclaimed warm-pool sandbox has to be recreated (see the
+note in step 6; leave claimed sandboxes alone, they keep the spec they were created with):
+
+```bash
+kubectl patch sandboxtemplate python-sandbox-template -n default --type json -p '[
+  {"op":"add","path":"/spec/podTemplate/spec/containers/0/resources/limits",
+   "value":{"cpu":"1","memory":"2Gi","ephemeral-storage":"2Gi"}}]'
+```
+
+### Ceiling on the number of pods
+
+Neither the warm pool (`replicas` is only the number of spare pods kept ready) nor the template limits how many
+conversations have a pod at once, so the backend does. `AGENTSANDBOX_MAX_PODS` (default 10, 0 = no ceiling) caps the
+conversations that have a sandbox *pod*; the spare pod and paused sandboxes (pod gone, volume kept) are not counted.
+It is counted from the `SandboxClaim`s in the cluster, so it survives a backend restart.
+
+A conversation needs a slot when it gets its first sandbox, or when a paused one is revived. If the ceiling is
+reached, in this order (`sandbox_manager._admission`):
+
+0. **Per user first.** `AGENTSANDBOX_MAX_PODS_PER_USER` (default 3, 0 = none) caps one user's pods across their
+   conversations. A user at the limit gets their *own* idlest sandbox paused, never somebody else's, so one user
+   cannot take the shared ceiling by opening many conversations. Needs the owner of the conversation: the claim gets a
+   `jarvis-user` label at creation, looked up from the conversation service (if that fails, only the shared ceiling
+   applies; claims from before the label count as one user each).
+1. **Pause a sandbox of the user who has been away longest** (a user is as recent as their most recent sandbox, so
+   someone using one conversation keeps all their others safe; of that user's sandboxes the idlest goes) (`shutdownTime` set to now, `Retain`: the pod goes, the volume and so the files stay,
+   and the next message revives it, which is exactly what the 30-minute idle timeout does anyway). Never one whose
+   conversation has a run going (the run lock, `conversation_lock.py`), never one with a call in flight, and never one
+   used less than `AGENTSANDBOX_EVICT_MIN_IDLE_SECONDS` (120) ago, so a conversation between two tool calls keeps its
+   pod. Running processes in the paused sandbox are lost, like at any expiry.
+2. **Wait** up to `AGENTSANDBOX_ADMIT_WAIT_SECONDS` (45) for a slot to free up.
+3. **Fail**: the tool call returns "no sandbox available. All N sandboxes are in use by other conversations right
+   now. Try again in a minute." (`SandboxCapacityError`; the upload / download endpoints answer 503).
+
+Size it from the node, not from the request: N pods at the 2Gi memory limit is the worst case, 512Mi each the usual.
+
+**With more than one backend replica.** The number of pods comes from the cluster, which every replica sees. Three things
+the cluster cannot tell are shared through Redis instead (`app/core/sandbox_coordination.py`, needs `REDIS_URL`): an
+admission lock (one decision at a time, so two replicas do not both take the last slot), the reservations (admitted but
+not yet visible as a pod), and the conversations with a call in flight (a replica never pauses a sandbox another one is
+running a command in). Which conversations have a run going is every lease in the run lock. Entries lapse within 30
+seconds if the replica that made them dies. Without `REDIS_URL`, or while Redis is unreachable, each replica decides on
+what it knows itself, which is correct for one replica only. The SDK cannot stand in for this: `list_active_sandboxes()`
+lists the connections held by *this client*, and `list_all_sandboxes()` lists what exists, not what is being used.
 
 ## 4. jarvis-backend side — RBAC + ServiceAccount
 

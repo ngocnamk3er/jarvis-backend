@@ -111,6 +111,33 @@ async def init_db() -> AsyncPostgresSaver:
             """
         )
 
+    # Models users add from the chat UI (see app/agents/user_models.py): per user, the
+    # API key of an own endpoint encrypted; the last connection check is kept so the list
+    # can show a status without calling every model on every page load.
+    async with pool.connection() as conn:
+        await conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {SCHEMA}.user_models (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK (kind IN ('openrouter', 'endpoint')),
+                model TEXT NOT NULL,
+                base_url TEXT,
+                api_key_enc TEXT,
+                vision BOOLEAN NOT NULL DEFAULT FALSE,
+                context_window INTEGER NOT NULL DEFAULT 128000,
+                send_reasoning BOOLEAN NOT NULL DEFAULT FALSE,
+                last_status TEXT,
+                last_checked_at TIMESTAMPTZ,
+                last_result JSONB,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE (user_id, name)
+            )
+            """
+        )
+
     # Images the agent has looked at (view_image) — DeepSeek Harness's "attachment
     # store". Saved once, content-addressed per conversation (the same bytes are
     # one row), and referenced by id from the tool result, so a later turn, a

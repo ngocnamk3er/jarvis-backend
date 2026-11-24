@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import health, chat, conversations, debug, files, mcp
+from app.api.v1.endpoints import health, chat, conversations, debug, files, mcp, user_models
 
 router = APIRouter()
 
@@ -9,3 +9,4 @@ router.include_router(conversations.router, prefix="/conversations", tags=["conv
 router.include_router(files.router, prefix="/files", tags=["files"])
 router.include_router(debug.router, prefix="/debug", tags=["debug"])
 router.include_router(mcp.router, prefix="/mcp", tags=["mcp"])
+router.include_router(user_models.router, prefix="/user-models", tags=["user-models"])

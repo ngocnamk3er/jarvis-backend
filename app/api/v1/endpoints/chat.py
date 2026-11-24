@@ -10,6 +10,7 @@ from app.agents.tools.files import sandbox_name
 from app.api.deps import CurrentUser, get_current_user
 from app.clients import conversation_client
 from app.core import observability
+from app.core.conversation_lock import Lease, conversation_locks
 from app.db import attachment_repository, feedback_repository
 from app.schemas.chat import (
     DEFAULT_MODEL,
@@ -33,6 +34,15 @@ async def _check_owns_thread(thread_id: str, user: CurrentUser):
     if conv is None or conv.user_id != user.sub:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return conv
+
+
+async def _lock_conversation(thread_id: str) -> Lease:
+    """The conversation's run lock, or 409 if another request is running on it. Without this two runs on one thread
+    each write their own checkpoint and one turn is lost (see app/core/conversation_lock.py)."""
+    lease = await conversation_locks.acquire(thread_id)
+    if lease is None:
+        raise HTTPException(status_code=409, detail="This conversation is already running. Wait for it to finish.")
+    return lease
 
 
 def _resume_models(request, conv) -> tuple[str, str | None]:
@@ -61,11 +71,16 @@ async def chat_stream(
 ):
     await _check_owns_thread(request.thread_id, user)
     graph = req.app.state.graph
-    await conversation_client.touch_conversation(
-        request.thread_id, request.model, request.subagent_model
-    )
+    lease = await _lock_conversation(request.thread_id)
+    try:
+        await conversation_client.touch_conversation(
+            request.thread_id, request.model, request.subagent_model
+        )
+    except BaseException:
+        lease.release()
+        raise
     return StreamingResponse(
-        chat_service.stream(
+        chat_service.guarded(lease, chat_service.stream(
             request.thread_id,
             request.content,
             graph,
@@ -75,7 +90,7 @@ async def chat_stream(
             request.subagent_model,
             request.web_search,
             request.unattended,
-        ),
+        )),
         media_type="text/event-stream",
     )
 
@@ -87,9 +102,14 @@ async def chat_resume(
     conv = await _check_owns_thread(request.thread_id, user)
     model, subagent_model = _resume_models(request, conv)
     graph = req.app.state.graph
-    await conversation_client.touch_conversation(request.thread_id, model, subagent_model)
+    lease = await _lock_conversation(request.thread_id)
+    try:
+        await conversation_client.touch_conversation(request.thread_id, model, subagent_model)
+    except BaseException:
+        lease.release()
+        raise
     return StreamingResponse(
-        chat_service.resume(
+        chat_service.guarded(lease, chat_service.resume(
             request.thread_id,
             request.decision,
             graph,
@@ -97,7 +117,7 @@ async def chat_resume(
             model,
             subagent_model,
             request.web_search,
-        ),
+        )),
         media_type="text/event-stream",
     )
 
@@ -207,9 +227,14 @@ async def chat_resume_clarify(
     conv = await _check_owns_thread(request.thread_id, user)
     model, subagent_model = _resume_models(request, conv)
     graph = req.app.state.graph
-    await conversation_client.touch_conversation(request.thread_id, model, subagent_model)
+    lease = await _lock_conversation(request.thread_id)
+    try:
+        await conversation_client.touch_conversation(request.thread_id, model, subagent_model)
+    except BaseException:
+        lease.release()
+        raise
     return StreamingResponse(
-        chat_service.resume_clarify(
+        chat_service.guarded(lease, chat_service.resume_clarify(
             request.thread_id,
             request.answer,
             graph,
@@ -217,7 +242,7 @@ async def chat_resume_clarify(
             model,
             subagent_model,
             request.web_search,
-        ),
+        )),
         media_type="text/event-stream",
     )
 

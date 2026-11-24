@@ -1,5 +1,6 @@
 from fastapi import HTTPException
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langchain_core.messages.utils import count_tokens_approximately
 
 import logging
 
@@ -8,8 +9,13 @@ from app.agents.async_research import describe_tasks, research_runner
 from app.agents.tools.sandbox_manager import reset as reset_sandbox
 from app.clients import conversation_client
 from app.db import attachment_repository, feedback_repository
+from app.services.interrupted import INTERRUPTED_NO_TEXT, INTERRUPTED_NOTE
 
 logger = logging.getLogger(__name__)
+
+
+# What _compact_conversation's summary message starts with — it is a HumanMessage, but not something the user wrote.
+SUMMARY_PREFIX = "Here is a summary of the conversation to date:"
 
 
 async def _get_owned_conversation(conversation_id: str, user_id: str):
@@ -147,7 +153,7 @@ def serialize_messages(
         if isinstance(msg, HumanMessage):
             flush()
             content = str(msg.content)
-            if content.startswith("Here is a summary of the conversation to date:"):
+            if content.startswith(SUMMARY_PREFIX):
                 result.append({
                     "role": "system",
                     "parts": [{"type": "text", "content": "Earlier messages in this conversation were summarized."}],
@@ -163,11 +169,20 @@ def serialize_messages(
             msg_trace_id = message_traces.get(msg.id) if msg.id else None
             if msg_trace_id:
                 pending_trace_id = msg_trace_id
+            interrupted = bool(msg.additional_kwargs.get("interrupted"))
             reasoning = msg.additional_kwargs.get("reasoning", "")
             if reasoning:
-                pending_parts.append({"type": "thinking", "content": reasoning, "isStreaming": False})
+                pending_parts.append({"type": "thinking", "content": reasoning, "isStreaming": False,
+                                      **({"interrupted": True} if interrupted else {})})
             if msg.content:
-                pending_parts.append({"type": "text", "content": str(msg.content)})
+                text = str(msg.content)
+                if interrupted:                      # the markers are for the model, not for the page
+                    if text == INTERRUPTED_NO_TEXT:
+                        text = ""
+                    elif text.endswith(INTERRUPTED_NOTE):
+                        text = text[: -len(INTERRUPTED_NOTE)]
+                if text:
+                    pending_parts.append({"type": "text", "content": text, **({"interrupted": True} if interrupted else {})})
             usage = msg.usage_metadata
             if usage:
                 pending_usage_calls.append(
@@ -314,3 +329,75 @@ async def get_messages(graph, conversation_id: str, user_id: str) -> dict:
         "messages": serialize_messages(messages, subagent_traces, message_traces, feedback_by_trace),
         "is_pending": bool(state.next),
     }
+
+
+# ── branching ─────────────────────────────────────────────────────────────────
+
+
+def _is_user_turn_start(msg) -> bool:
+    return isinstance(msg, HumanMessage) and not str(msg.content).startswith(SUMMARY_PREFIX)
+
+
+def messages_for_branch(messages: list, keep_turns: int) -> list:
+    """The messages of the first `keep_turns` turns — a turn being a message the user wrote and everything up to
+    the next one. Raises HTTPException when that is not a point a conversation can be continued from: more turns
+    than there are, or a cut that does not end on a finished answer (a tool call without its result, or an
+    answer still being written, cannot be resumed in a new thread)."""
+    if keep_turns < 0:
+        raise HTTPException(status_code=400, detail="keep_turns must not be negative")
+    starts = [i for i, m in enumerate(messages) if _is_user_turn_start(m)]
+    if keep_turns > len(starts):
+        raise HTTPException(status_code=400, detail="This conversation has fewer turns than that")
+    kept = messages[: starts[keep_turns]] if keep_turns < len(starts) else list(messages)
+    if not kept:
+        return []
+    last = kept[-1]
+    if not isinstance(last, AIMessage) or last.tool_calls:
+        raise HTTPException(status_code=400, detail="Cannot branch here: that turn has not finished")
+    return kept
+
+
+def _node_that_ends_the_run(graph) -> str | None:
+    """A node whose edge leads to the end of the graph. Writing state `as_node` that one makes LangGraph treat the
+    new thread as a run that has just finished (state.next empty). Without it a thread whose state was only ever
+    written by hand reads as 'about to run the model', and the page would show a spurious interrupted banner."""
+    for edge in graph.get_graph().edges:
+        if edge.target == "__end__":
+            return edge.source
+    return None
+
+
+async def fork_conversation(graph, conversation_id: str, user_id: str, keep_turns: int) -> dict:
+    """A new conversation that starts as a copy of the first `keep_turns` turns of this one, to continue
+    differently from there. The original is left as it is.
+
+    Built from the messages in the original's latest checkpoint, so no checkpoint history is needed. What is not
+    carried over: the sandbox (the branch gets its own, empty one — files the earlier turns made there are not in
+    it) and the todo list / background research tasks, which belong to the original's present, not to the point
+    branched from."""
+    conv = await _get_owned_conversation(conversation_id, user_id)
+    state = await graph.aget_state({"configurable": {"thread_id": conversation_id}})
+    values = state.values or {}
+    kept = messages_for_branch(values.get("messages", []), keep_turns)
+
+    title = (conv.title or "New conversation")[:80] + " (branch)"
+    new = await conversation_client.create_conversation(title, user_id)
+    try:
+        if kept:
+            update: dict = {"messages": kept}
+            if values.get("loaded_tools"):
+                update["loaded_tools"] = values["loaded_tools"]
+            await graph.aupdate_state(
+                {"configurable": {"thread_id": new["id"]}}, update, as_node=_node_that_ends_the_run(graph)
+            )
+            tokens = count_tokens_approximately(kept)
+            await conversation_client.set_context_tokens(new["id"], tokens)
+            new["context_tokens"] = tokens
+        if conv.last_model or conv.last_subagent_model:
+            await conversation_client.touch_conversation(new["id"], conv.last_model, conv.last_subagent_model)
+            new["last_model"], new["last_subagent_model"] = conv.last_model, conv.last_subagent_model
+    except Exception:
+        # Do not leave an empty conversation behind in the user's list (it is one this call just made).
+        await conversation_client.delete_conversation(new["id"])
+        raise
+    return new

@@ -474,27 +474,59 @@ async def _touch_expiry(claim_name: str, namespace: str, label: str) -> None:
         logger.warning("could not extend expiry for claim %s", claim_name, exc_info=True)
 
 
+# One creation at a time per conversation. The model may ask for several bash calls in one step (seen in 27 saved
+# steps, 11 of them the first bash step of their conversation); each looks for the conversation's sandbox, finds none,
+# and creates one, so the conversation ended up with two or more sandboxes that do not share files. A conversation has
+# one run at a time (conversation_locks), so every call for it is in this process and a local lock is enough.
+_creating: dict[str, tuple[asyncio.Lock, int]] = {}  # label -> (lock, callers using it); dropped when the last leaves
+
+
+@contextlib.asynccontextmanager
+async def _one_creation_at_a_time(label: str):
+    lock, users = _creating.get(label) or (asyncio.Lock(), 0)
+    _creating[label] = (lock, users + 1)
+    try:
+        async with lock:
+            yield
+    finally:
+        lock, users = _creating[label]
+        if users <= 1:
+            del _creating[label]
+        else:
+            _creating[label] = (lock, users - 1)
+
+
+async def _find_sandbox(client, namespace: str, label: str):
+    existing = await client.list_all_sandboxes(namespace, label_selector=f"{_THREAD_LABEL}={label}")
+    if not existing:
+        return None
+    await _touch_expiry(existing[0], namespace, label)
+    return await client.get_sandbox(existing[0], namespace)
+
+
 async def _get_or_create_sandbox(thread_id: str):
     client = _get_client()
     namespace = settings.AGENTSANDBOX_NAMESPACE
     label = _label_value(thread_id)
-    existing = await client.list_all_sandboxes(namespace, label_selector=f"{_THREAD_LABEL}={label}")
-    if existing:
-        await _touch_expiry(existing[0], namespace, label)
-        return await client.get_sandbox(existing[0], namespace)
+    if (found := await _find_sandbox(client, namespace, label)) is not None:
+        return found                      # the usual case: no lock, calls of one conversation share the sandbox freely
 
-    owner = await _owner_of(label)
-    async with _admission(label):
-        sandbox = await client.create_sandbox(
-            warmpool=settings.AGENTSANDBOX_WARMPOOL,
-            namespace=namespace,
-            sandbox_ready_timeout=_CLAIM_READY_TIMEOUT,
-            labels={_THREAD_LABEL: label, **({_USER_LABEL: owner} if owner else {})},
-        )
-        # claim_name, not sandbox_id — the latter names the Sandbox, which is a
-        # different object and would silently find no claim here.
-        await _touch_expiry(sandbox.claim_name, namespace, label)
-    return sandbox
+    async with _one_creation_at_a_time(label):
+        # Looked again inside the lock: a call that was here first has made it by now.
+        if (found := await _find_sandbox(client, namespace, label)) is not None:
+            return found
+        owner = await _owner_of(label)
+        async with _admission(label):
+            sandbox = await client.create_sandbox(
+                warmpool=settings.AGENTSANDBOX_WARMPOOL,
+                namespace=namespace,
+                sandbox_ready_timeout=_CLAIM_READY_TIMEOUT,
+                labels={_THREAD_LABEL: label, **({_USER_LABEL: owner} if owner else {})},
+            )
+            # claim_name, not sandbox_id — the latter names the Sandbox, which is a
+            # different object and would silently find no claim here.
+            await _touch_expiry(sandbox.claim_name, namespace, label)
+        return sandbox
 
 
 async def exec_bash(thread_id: str, command: str) -> dict:

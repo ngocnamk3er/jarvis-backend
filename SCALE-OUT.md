@@ -73,6 +73,22 @@ Mọi bước trên đều làm theo khả năng: lỗi Redis được ghi log (
 - `SHUTDOWN_DRAIN_SECONDS` (mặc định 600): thời gian chờ lượt chạy và tác vụ nghiên cứu khi tắt.
 - `jarvis-deploy/backend/base/backend.yaml`: `terminationGracePeriodSeconds: 900`, `preStop` 5 giây. Số `replicas` vẫn là 1.
 
+## 5b. Số liệu cho autoscaler: `/metrics`
+
+Cả backend và conversation-service đều trả `GET /metrics` (định dạng Prometheus) với ba con số cho từng nhóm route (`default`, và `chat` ở backend):
+
+| Metric | Ý nghĩa |
+|---|---|
+| `jarvis_inflight_requests` | Số request đang xử lý ngay lúc này |
+| `jarvis_inflight_limit` | Giới hạn mà từ đó request kế tiếp bị trả 503 (0 là không giới hạn) |
+| `jarvis_shed_requests_total` | Số request đã bị từ chối bằng 503 kể từ khi tiến trình khởi động |
+
+Đây là tín hiệu để scale thay cho CPU với dịch vụ chủ yếu chờ I/O: số request đang xử lý cho biết mức tải trước khi CPU kịp tăng, và khớp trực tiếp với cơ chế 503. Endpoint luôn trả lời, kể cả khi nhóm route đã đầy, và **chỉ trả cho người gọi bên trong cluster**: request đi qua Ingress có header chuyển tiếp nên nhận 404. **Đã cài Prometheus và KEDA (ngày 2026-11-24, cài tay, chưa dùng để scale thật):**
+- Prometheus (`jarvis-deploy/monitoring/prometheus.yaml`, namespace `monitoring`): một pod, quét `/metrics` của các pod `backend` và `conversation-service` mỗi 10 giây, giữ 6 giờ, không có ổ đĩa. Chọn pod theo nhãn `app` nên không cần thêm chú thích vào Deployment.
+- KEDA 2.21.1 (`jarvis-deploy/keda/values.yaml`, cài bằng Helm vào namespace `keda`). Cả hai cộng lại dùng khoảng 15m CPU và 110 MB RAM.
+- Đã thử đầu cuối bằng một deployment giả (đã xóa): khi bắn tải thật, số request đang xử lý của conversation-service lên 13–14, KEDA đọc được và đưa deployment giả từ 1 lên 3 pod sau khoảng 20 giây; hết tải thì về 1 pod. So với HPA theo CPU (khoảng 2,5 phút) là nhanh hơn nhiều, nhưng con số 20 giây đo trên một lần thử.
+- **conversation-service đã chuyển sang KEDA (2026-11-24, chỉ ở cluster test).** HPA theo CPU được thay bằng một ScaledObject (`jarvis-deploy/conversation-service/overlays/test/scaledobject.yaml`) với hai tín hiệu: tổng số request đang xử lý (ngưỡng 10 mỗi pod, khoảng 70% giới hạn 15) và tốc độ request bị từ chối (ngưỡng 2 mỗi giây mỗi pod); số pod là mức lớn hơn trong hai mức. Cluster staging chưa có KEDA nên vẫn giữ HPA theo CPU trong `base`. Đo trên cluster thật với 150 req/s từ 1 pod: quyết định thêm pod sau khoảng 15 giây, đủ 3 pod sẵn sàng sau khoảng 31 giây (HPA theo CPU trước đó mất khoảng 2,5 phút). Backend vẫn 1 pod cố định, chưa có bộ scale.
+
 ## 6. Đã kiểm chứng
 
 - Test tự động: 328 đạt khi không có Redis, 383 đạt khi có Redis thật (`REDIS_TEST_URL`).

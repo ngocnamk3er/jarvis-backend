@@ -193,3 +193,50 @@ async def test_any_other_downstream_error_is_still_a_500():
     for status, body in ((503, {"detail": "down for maintenance"}), (503, "plain text"), (500, {"code": "overloaded"}), (404, {})):
         r = await downstream_app(status, body).get("/call")
         assert r.status_code == 500, (status, body)
+
+
+# ---- /metrics: what an autoscaler can read instead of CPU ------------------------------------------------------------
+
+
+def _samples(text: str) -> dict[str, int]:
+    """{'name{class="x"}': value} for every sample line."""
+    return {line.rsplit(" ", 1)[0]: int(line.rsplit(" ", 1)[1]) for line in text.splitlines() if line and not line.startswith("#")}
+
+
+async def test_metrics_report_what_is_in_flight_the_limit_and_the_refusals():
+    client, gate = build({"default": 2, "chat": 1})
+    held = [asyncio.create_task(client.get("/api/v1/slow")) for _ in range(2)]
+    chat = asyncio.create_task(client.post("/api/v1/chat/stream"))
+    await settle()
+    assert (await client.get("/api/v1/slow")).status_code == 503                      # one refusal
+    response = await asyncio.wait_for(client.get("/metrics"), timeout=1)             # answered although the class is full
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain; version=0.0.4")
+    assert _samples(response.text) == {
+        'jarvis_inflight_requests{class="chat"}': 1,
+        'jarvis_inflight_requests{class="default"}': 2,                               # the /metrics call itself is not counted
+        'jarvis_inflight_limit{class="chat"}': 1,
+        'jarvis_inflight_limit{class="default"}': 2,
+        'jarvis_shed_requests_total{class="chat"}': 0,
+        'jarvis_shed_requests_total{class="default"}': 1,
+    }
+    gate.set()
+    await asyncio.gather(*held, chat)
+    after = _samples((await client.get("/metrics")).text)
+    assert after['jarvis_inflight_requests{class="default"}'] == 0 and after['jarvis_inflight_requests{class="chat"}'] == 0
+    assert after['jarvis_shed_requests_total{class="default"}'] == 1                  # a counter: it does not go back down
+
+
+async def test_metrics_are_valid_prometheus_text_with_help_and_type_lines():
+    client, _ = build({"default": 3})
+    text = (await client.get("/metrics")).text
+    for name, kind in (("jarvis_inflight_requests", "gauge"), ("jarvis_inflight_limit", "gauge"), ("jarvis_shed_requests_total", "counter")):
+        assert f"# TYPE {name} {kind}" in text and f"# HELP {name} " in text
+    assert text.endswith("\n")
+
+
+async def test_metrics_are_not_served_to_a_request_that_came_through_the_ingress():
+    client, _ = build({"default": 3})
+    for header in ("x-forwarded-for", "x-real-ip", "forwarded"):
+        response = await client.get("/metrics", headers={header: "203.0.113.9"})
+        assert response.status_code == 404 and "jarvis_" not in response.text, header

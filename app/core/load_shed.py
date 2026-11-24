@@ -12,6 +12,12 @@ cannot use up the room the quick reads need, nor the reverse.
 Pure ASGI on purpose (not BaseHTTPMiddleware, which buffers and breaks streaming), and it must sit *inside* the CORS
 middleware: a 503 that skips CORS has no Access-Control-Allow-Origin, and the browser then shows the frontend a bare
 network error instead of the status and the Retry-After header it needs.
+
+`GET /metrics` (Prometheus text format) reports, per class: requests in flight now, the limit, and how many were refused
+since the process started. It is the signal an autoscaler can use instead of CPU: for a service that mostly waits (on the
+database, on an LLM) the number of requests being worked on says how loaded it is long before the CPU does. It is
+answered before any limit applies, and only to a caller inside the cluster: a request that came through the ingress carries
+a forwarding header and gets a 404, so the numbers are not served to the internet.
 """
 
 import json
@@ -22,6 +28,8 @@ from collections.abc import Callable
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
+
+METRICS_PATH = "/metrics"
 
 # What a refused caller is told. `code` is the stable part: the frontend switches on it, the sentence is for people.
 _BODY_TEXT = "The server is busy right now. Try again in a moment."
@@ -52,6 +60,9 @@ class LoadShedMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        if scope["path"] == METRICS_PATH and scope["method"] == "GET":
+            await self._metrics(scope, send)
+            return
         name = self.classify(scope)
         cap = self.limits().get(name, 0) if name else 0
         if not name or cap <= 0:
@@ -65,6 +76,34 @@ class LoadShedMiddleware:
             await self.app(scope, receive, send)        # for a streamed response this returns when the stream ends
         finally:
             self.in_flight[name] -= 1
+
+    def metrics_text(self) -> str:
+        """Prometheus text exposition: requests in flight, the limit (0 = none), and refusals so far, per class."""
+        limits = self.limits()
+        classes = sorted(set(limits) | set(self.in_flight) | set(self.shed))
+        lines: list[str] = []
+
+        def metric(name: str, kind: str, help_text: str, values: dict[str, int]) -> None:
+            lines.extend([f"# HELP {name} {help_text}", f"# TYPE {name} {kind}"])
+            lines.extend(f'{name}{{class="{c}"}} {values.get(c, 0)}' for c in classes)
+
+        metric("jarvis_inflight_requests", "gauge", "Requests being worked on right now, per class of route.", self.in_flight)
+        metric("jarvis_inflight_limit", "gauge", "Requests in flight past which the next one is refused with 503 (0 = no limit).", limits)
+        metric("jarvis_shed_requests_total", "counter", "Requests refused with 503 since this process started.", self.shed)
+        return "\n".join(lines) + "\n"
+
+    async def _metrics(self, scope: Scope, send: Send) -> None:
+        headers = {k.lower() for k, _ in scope["headers"]}
+        if headers & {b"x-forwarded-for", b"x-real-ip", b"forwarded"}:  # came through the ingress: not for the internet
+            status, body, content_type = 404, b'{"detail":"Not Found"}', b"application/json"
+        else:
+            status, body, content_type = 200, self.metrics_text().encode(), b"text/plain; version=0.0.4; charset=utf-8"
+        await send({
+            "type": "http.response.start",
+            "status": status,
+            "headers": [(b"content-type", content_type), (b"content-length", str(len(body)).encode()), (b"cache-control", b"no-store")],
+        })
+        await send({"type": "http.response.body", "body": body})
 
     async def _refuse(self, name: str, cap: int, send: Send) -> None:
         seconds = max(1, int(self.retry_after()))

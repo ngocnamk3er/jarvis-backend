@@ -46,8 +46,20 @@ content) and cite sources (URLs) for key claims. Do not ask the calling agent fo
 questions — make reasonable assumptions and note them briefly if something is ambiguous."""
 
 
-def research_system_prompt(*, sandbox: bool) -> str:
-    """`sandbox` is whether this agent has `bash` and `generate_visualization_svg`."""
-    if sandbox:
-        return _INTRO + _BASH_TOOL + _VIZ_TOOL + _WORKFLOW
-    return _INTRO + _TRUNCATION_NOTE + _WORKFLOW
+def _budget_section(budget: dict[str, int]) -> str:
+    """How many calls of each tool the agent gets, so it can plan to fit them. Without it the model planned one search
+    per detail and ran out before writing anything (one task planned 25 searches against a limit of 24)."""
+    limits = ", ".join(f"{n} `{tool}`" for tool, n in budget.items())
+    return f"""
+
+## Budget
+You can make at most {limits} calls in this task. Calls past that are refused, and you then have to write the report
+with what you have. Plan to fit: for a broad question, cover several items in one query rather than one query per
+detail, so every part of the question gets covered."""
+
+
+def research_system_prompt(*, sandbox: bool, budget: dict[str, int] | None = None) -> str:
+    """`sandbox` is whether this agent has `bash` and `generate_visualization_svg`. `budget` maps a tool to how many
+    calls of it the agent gets — the soft limits its SoftHardToolCallLimitMiddleware instances enforce."""
+    tools = _BASH_TOOL + _VIZ_TOOL if sandbox else _TRUNCATION_NOTE
+    return _INTRO + tools + _WORKFLOW + (_budget_section(budget) if budget else "")

@@ -12,6 +12,9 @@ from app.agents.tools.web_fetch import web_fetch
 from app.agents.tools.bash import bash
 from app.agents.tools.generate_visualization_svg import generate_visualization_svg
 
+# tool -> (soft, hard) calls per subagent run. The soft limit is the budget its prompt states.
+RESEARCH_LIMITS = {"web_search": (10, 12), "web_fetch": (10, 12), "bash": (5, 7), "generate_visualization_svg": (3, 5)}
+
 # Built as a CompiledSubAgent (our own create_agent() call) rather than a raw
 # SubAgent spec so the model can carry a .with_fallbacks() chain (see
 # build_llm_with_fallback) — deepagents' resolve_model() breaks on a
@@ -29,7 +32,7 @@ RESEARCH_SUBAGENT: CompiledSubAgent = {
     "runnable": create_agent(
         model=build_llm_with_fallback(is_subagent_model=True),
         tools=[web_search, web_fetch, bash, generate_visualization_svg],
-        system_prompt=research_system_prompt(sandbox=True),
+        system_prompt=research_system_prompt(sandbox=True, budget={t: s for t, (s, _) in RESEARCH_LIMITS.items()}),
         name="research",
         # Caps each subagent *instance's* own tool use — independent of, and in
         # addition to, the main agent's SoftHardToolCallLimitMiddleware(tool_name="task")
@@ -42,19 +45,10 @@ RESEARCH_SUBAGENT: CompiledSubAgent = {
             # research subagent, not just the caller.
             ToolToggleMiddleware(),
             # Two-tier per-run caps, same as the main agent's (see graph.py) — soft
-            # blocks-but-continues, hard blocks-and-stops this subagent's own run.
-            SoftHardToolCallLimitMiddleware(
-                tool_name="web_search", soft_limit=10, hard_limit=12
-            ),
-            SoftHardToolCallLimitMiddleware(
-                tool_name="web_fetch", soft_limit=10, hard_limit=12
-            ),
-            SoftHardToolCallLimitMiddleware(
-                tool_name="bash", soft_limit=5, hard_limit=7
-            ),
-            SoftHardToolCallLimitMiddleware(
-                tool_name="generate_visualization_svg", soft_limit=3, hard_limit=5
-            ),
+            # blocks-but-continues; past hard, the subagent writes its report with
+            # what it has, in a last turn that may not call tools.
+            *(SoftHardToolCallLimitMiddleware(tool_name=t, soft_limit=s, hard_limit=h)
+              for t, (s, h) in RESEARCH_LIMITS.items()),
             # Appended last to match deepagents' own raw-SubAgent ordering
             # (it appends this after any custom middleware from the spec).
             HumanInTheLoopMiddleware(

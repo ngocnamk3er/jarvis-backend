@@ -142,8 +142,10 @@ def _finished_cleanly(values: dict | None, next_nodes: tuple) -> bool:
 
 
 # What SoftHardToolCallLimitMiddleware's last message says when it ends a run
-# (app/agents/middleware.py). A run ended that way reaches its end, so it looks
-# like a finished one — with the stop notice where the report should be.
+# (its stop_notice, app/agents/middleware.py): past the hard limit the model gets
+# a last turn without tools to write its report, and if it calls a tool anyway
+# the run ends there. A run ended that way reaches its end, so it looks like a
+# finished one — with the stop notice where the report should be.
 _LIMIT_STOP = re.compile(r"tool call limit reached: hard limit exceeded")
 
 

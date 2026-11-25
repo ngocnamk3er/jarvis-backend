@@ -84,11 +84,10 @@ def build_graph(
                                    "when": _bash_needs_approval}},
         ),
         TodoListMiddleware(),
-        # Two-tier per-run caps (not thread-wide — resets every turn): up to
-        # soft_limit calls get blocked-but-continue, a burst past hard_limit
-        # blocks-and-stops-the-run entirely. See SoftHardToolCallLimitMiddleware's
-        # docstring for why "end" on hard breach requires that tool to be the
-        # only one called in that step.
+        # Two-tier per-run caps (not thread-wide — resets every turn): calls past
+        # soft_limit are blocked but the run goes on; past hard_limit the model
+        # gets one last turn without tools to answer with what it has. See
+        # SoftHardToolCallLimitMiddleware's docstring.
         SoftHardToolCallLimitMiddleware(
             tool_name="web_search",
             soft_limit=50,

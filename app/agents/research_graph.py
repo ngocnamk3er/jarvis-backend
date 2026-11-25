@@ -24,11 +24,17 @@ from app.agents.tools.web_fetch import web_fetch
 from app.agents.tools.web_search import web_search
 
 
+# tool -> (soft, hard) calls per task. The soft limit is the budget the prompt states; the hard one leaves room for the
+# last parallel batch. Roomier than the in-process subagent's 10/12: nobody waits on this one, and a question worth
+# running in the background is usually a broad one — at 12 searches a four-way comparison was cut off.
+LIMITS = {"web_search": (20, 24), "web_fetch": (12, 15)}
+
+
 def build_research_graph(checkpointer=None):
     return create_agent(
         model=build_llm_with_fallback(is_subagent_model=True),
         tools=[web_search, web_fetch],
-        system_prompt=research_system_prompt(sandbox=False),
+        system_prompt=research_system_prompt(sandbox=False, budget={t: s for t, (s, _) in LIMITS.items()}),
         name="research",
         checkpointer=checkpointer,
         middleware=[
@@ -37,11 +43,6 @@ def build_research_graph(checkpointer=None):
             # so a conversation with web search turned off gets the same answer
             # here as it would from the in-process subagent.
             ToolToggleMiddleware(),
-            # Roomier than the in-process subagent's 10/12: nobody waits on this
-            # one, and a question worth running in the background is usually a
-            # broad one — at 12 searches a four-way comparison was cut off
-            # before it could write anything.
-            SoftHardToolCallLimitMiddleware(tool_name="web_search", soft_limit=20, hard_limit=24),
-            SoftHardToolCallLimitMiddleware(tool_name="web_fetch", soft_limit=12, hard_limit=15),
+            *(SoftHardToolCallLimitMiddleware(tool_name=t, soft_limit=s, hard_limit=h) for t, (s, h) in LIMITS.items()),
         ],
     )

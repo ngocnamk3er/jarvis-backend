@@ -223,13 +223,23 @@ class SoftHardToolCallLimitMiddleware(AgentMiddleware):
 
     - Calls 1..soft_limit: allowed.
     - Calls soft_limit+1..hard_limit: blocked with an error `ToolMessage`, but
-      the model keeps going (same spirit as `ToolCallLimitMiddleware`'s
-      `exit_behavior="continue"`) — it can still finish the turn with other
-      tools or with the calls that did go through.
-    - Any call past hard_limit: also blocked, but additionally ends the run
-      right there (`jump_to="end"`, same spirit as `exit_behavior="end"`) —
-      a burst that blows past the hard ceiling isn't left for the model to
-      keep negotiating around.
+      the model keeps going — it can still use other tools or wrap up.
+    - A call past hard_limit: blocked, and the model gets one last turn in which
+      it may not call any tool (`tool_choice="none"`), so the run ends with an
+      answer written from what it already has.
+
+    Until 2026-11-26 a call past hard_limit ended the run right there instead.
+    Models call tools in parallel batches, and one batch can cross both limits
+    in a single step: two background research tasks went from 10 to 14 searches
+    (limits 10/12) and from 20 to 25 (limits 20/24). They ended in that step,
+    before the model ever read the soft-limit message, with the stop notice
+    where the report should have been — everything they had found was lost.
+    Ending there also could not work when the same step called another tool,
+    which would have been left without a response.
+
+    If the model calls a tool anyway in that last turn (a provider may ignore
+    tool_choice), every call is refused and the run ends there, with
+    `stop_notice()` as its last message.
 
     Either breach also dispatches a `tool_call_limit` custom event (see
     `TOOL_CALL_LIMIT_EVENT`) so the frontend can show it directly, rather than
@@ -252,6 +262,23 @@ class SoftHardToolCallLimitMiddleware(AgentMiddleware):
     def name(self) -> str:
         return f"{self.__class__.__name__}[{self.tool_name}]"
 
+    def _count(self, state: Any) -> int:
+        return (state.get("run_tool_call_count") or {}).get(self.tool_name, 0)
+
+    def _wrapping_up(self, state: Any) -> bool:
+        """Past the hard limit: the model's next turn is its last, and it may not call tools."""
+        return self._count(state) > self.hard_limit
+
+    def stop_notice(self, count: int) -> str:
+        # async_research.py's _LIMIT_STOP matches this text to tell a run that ended here from one with a report.
+        return (
+            f"'{self.tool_name}' tool call limit reached: hard limit exceeded "
+            f"({count}/{self.hard_limit} calls this run). Stopping execution."
+        )
+
+    def _refused(self, tool_call: ToolCall, content: str) -> ToolMessage:
+        return ToolMessage(content=content, tool_call_id=tool_call["id"], name=tool_call.get("name"), status="error")
+
     def _evaluate(
         self, state: ToolCallLimitState
     ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
@@ -262,18 +289,33 @@ class SoftHardToolCallLimitMiddleware(AgentMiddleware):
         separate since dispatching is the only part that differs sync vs async).
         """
         messages = state.get("messages", [])
-        last_ai_message = next(
-            (m for m in reversed(messages) if isinstance(m, AIMessage)), None
-        )
-        if not last_ai_message or not last_ai_message.tool_calls:
+        at = next((i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], AIMessage)), None)
+        if at is None or not messages[at].tool_calls:
             return None, []
+        last_ai_message = messages[at]
+        # Calls another middleware has already answered (blocked) in this step are not counted or answered again.
+        answered = {m.tool_call_id for m in messages[at + 1:] if isinstance(m, ToolMessage)}
+        calls = [tc for tc in last_ai_message.tool_calls if tc["id"] not in answered]
 
-        run_counts = state.get("run_tool_call_count", {}).copy()
+        run_counts = dict(state.get("run_tool_call_count") or {})
         count = run_counts.get(self.tool_name, 0)
+
+        if count > self.hard_limit:
+            # This was the last turn, offered no tools, and the model called some anyway. Refuse them all — any tool,
+            # not just this one, since none may run now — and end the run.
+            if not calls:
+                return None, []
+            return {
+                "messages": [
+                    *(self._refused(tc, "No more tool calls are possible in this run.") for tc in calls),
+                    AIMessage(content=self.stop_notice(count)),
+                ],
+                "jump_to": "end",
+            }, []
 
         soft_blocked: list[ToolCall] = []
         hard_blocked: list[ToolCall] = []
-        for tool_call in last_ai_message.tool_calls:
+        for tool_call in calls:
             if tool_call["name"] != self.tool_name:
                 continue
             count += 1
@@ -286,37 +328,7 @@ class SoftHardToolCallLimitMiddleware(AgentMiddleware):
         if not soft_blocked and not hard_blocked:
             return {"run_tool_call_count": run_counts}, []
 
-        if hard_blocked:
-            # Jumping to "end" leaves any OTHER tool's pending calls in this same
-            # AIMessage without a matching ToolMessage, which breaks the next model
-            # call (every tool_call must get a response). Only safe to jump straight
-            # to "end" when this tool is the only one called this step.
-            other_tools = [
-                tc for tc in last_ai_message.tool_calls if tc["name"] != self.tool_name
-            ]
-            if other_tools:
-                tool_names = ", ".join({tc["name"] for tc in other_tools})
-                msg = (
-                    f"Cannot end execution with other tool calls pending. "
-                    f"Found calls to: {tool_names}. Hard limit needs this tool to be "
-                    "the only one called in that step."
-                )
-                raise NotImplementedError(msg)
-
         limit_events: list[dict[str, Any]] = []
-        artificial_messages: list[ToolMessage | AIMessage] = [
-            ToolMessage(
-                content=(
-                    f"Soft limit reached for '{self.tool_name}' ({self.soft_limit} "
-                    "calls/run). This call was blocked — you can still use other "
-                    "tools or wrap up with what you already have."
-                ),
-                tool_call_id=tool_call["id"],
-                name=tool_call.get("name"),
-                status="error",
-            )
-            for tool_call in soft_blocked
-        ]
         if soft_blocked:
             limit_events.append({
                 "tool_name": self.tool_name,
@@ -325,18 +337,6 @@ class SoftHardToolCallLimitMiddleware(AgentMiddleware):
                 "limit": self.soft_limit,
                 "blocked": len(soft_blocked),
             })
-        artificial_messages += [
-            ToolMessage(
-                content=(
-                    f"Hard limit reached for '{self.tool_name}' "
-                    f"({self.hard_limit} calls/run). Stopping now."
-                ),
-                tool_call_id=tool_call["id"],
-                name=tool_call.get("name"),
-                status="error",
-            )
-            for tool_call in hard_blocked
-        ]
         if hard_blocked:
             limit_events.append({
                 "tool_name": self.tool_name,
@@ -345,27 +345,40 @@ class SoftHardToolCallLimitMiddleware(AgentMiddleware):
                 "limit": self.hard_limit,
                 "blocked": len(hard_blocked),
             })
-
-        if hard_blocked:
-            artificial_messages.append(
-                AIMessage(
-                    content=(
-                        f"'{self.tool_name}' tool call limit reached: hard limit "
-                        f"exceeded ({count}/{self.hard_limit} calls this run). "
-                        "Stopping execution."
-                    )
-                )
+            # The whole step gets the wrap-up message: a soft-limit one saying "you can still use other tools" would be
+            # wrong next to it, since the next turn may not call any.
+            content = (
+                f"Limit reached for '{self.tool_name}' ({self.hard_limit} calls/run). This call was not run, and no "
+                "more tool calls are possible. Write your final answer now from what you already have, and say "
+                "briefly what you could not cover."
             )
-            return {
-                "run_tool_call_count": run_counts,
-                "jump_to": "end",
-                "messages": artificial_messages,
-            }, limit_events
-
+        else:
+            content = (
+                f"Soft limit reached for '{self.tool_name}' ({self.soft_limit} "
+                "calls/run). This call was blocked — you can still use other "
+                "tools or wrap up with what you already have."
+            )
         return {
             "run_tool_call_count": run_counts,
-            "messages": artificial_messages,
+            "messages": [self._refused(tc, content) for tc in soft_blocked + hard_blocked],
         }, limit_events
+
+    def _last_turn(self, request: ModelRequest) -> ModelRequest:
+        # tool_choice rather than dropping the tools: the history holds tool calls, which some providers only accept
+        # alongside the tool definitions, and unchanged tools keep the provider's prompt cache valid.
+        if request.tools and self._wrapping_up(request.state):
+            return request.override(tool_choice="none")
+        return request
+
+    def wrap_model_call(
+        self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]
+    ) -> ModelResponse:
+        return handler(self._last_turn(request))
+
+    async def awrap_model_call(
+        self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]
+    ) -> ModelResponse:
+        return await handler(self._last_turn(request))
 
     @hook_config(can_jump_to=["end"])
     def after_model(self, state: ToolCallLimitState, runtime: Any) -> dict[str, Any] | None:
@@ -382,4 +395,3 @@ class SoftHardToolCallLimitMiddleware(AgentMiddleware):
         for payload in limit_events:
             await adispatch_custom_event(TOOL_CALL_LIMIT_EVENT, payload)
         return result
-

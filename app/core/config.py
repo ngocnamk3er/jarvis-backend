@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     # Kong 60 s by default) closes it mid-turn. 0 turns it off. See app/core/sse.py.
     SSE_HEARTBEAT_SECONDS: float = 15.0
 
+    # Flows users build from nodes and run (app/flows/). A run is stopped after FLOW_RUN_TIMEOUT_SECONDS.
+    FLOWS_ENABLED: bool = True
+    FLOWS_MAX_PER_USER: int = 50
+    FLOW_RUN_TIMEOUT_SECONDS: int = 600
+
     # jarvis-conversation-service — owns the conversations/subagent_traces
     # tables since the Chapter 2 decomposition; see app/clients/conversation_client.py.
     CONVERSATION_SERVICE_URL: str = "http://localhost:8001"

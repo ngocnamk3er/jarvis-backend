@@ -148,6 +148,10 @@ def test_the_classifier_puts_each_real_route_in_the_right_class():
     assert cls("GET", "/api/v1/conversations") == "default"
     assert cls("GET", "/api/v1/chat/models") == "default"                              # a read under /chat is not a run
     assert cls("POST", "/api/v1/chat/sandbox-upload") == "default"
+    # a flow's test run streams for as long as the flow runs; saving or reading flows is quick
+    assert cls("POST", "/api/v1/flows/0b6c1f9e-5a3e-4c8b-9d2a-7f1e6a4b3c21/run") == "chat"
+    assert cls("GET", "/api/v1/flows/0b6c1f9e-5a3e-4c8b-9d2a-7f1e6a4b3c21") == "default"
+    assert cls("POST", "/api/v1/flows") == "default" and cls("POST", "/api/v1/flows/x/run/more") == "default"
 
 
 def test_the_real_app_puts_cors_outside_the_shedder():

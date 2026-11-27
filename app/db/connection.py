@@ -138,6 +138,28 @@ async def init_db() -> AsyncPostgresSaver:
             """
         )
 
+    # Flows users build from nodes (see app/flows/). `definition` is the flow as the editor saved it; `version` goes up
+    # on every save, so a compiled flow can be cached by (id, version). `slug` names the flow where a name with spaces
+    # or accents cannot go (a tool name, in a later step).
+    async with pool.connection() as conn:
+        await conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {SCHEMA}.user_flows (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                slug TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                definition JSONB NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE (user_id, slug)
+            )
+            """
+        )
+
     # Images the agent has looked at (view_image) — DeepSeek Harness's "attachment
     # store". Saved once, content-addressed per conversation (the same bytes are
     # one row), and referenced by id from the tool result, so a later turn, a

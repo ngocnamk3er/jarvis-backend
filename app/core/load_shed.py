@@ -22,6 +22,7 @@ a forwarding header and gets a 404, so the numbers are not served to the interne
 
 import json
 import logging
+import re
 import time
 from collections.abc import Callable
 
@@ -132,13 +133,16 @@ def backend_classifier(api_prefix: str) -> Callable[[Scope], str | None]:
     Kubernetes restart the pod, which cuts every run in flight) and /chat/stop (the one request that lets the load go
     away)."""
     chat_runs = {f"{api_prefix}/chat/{p}" for p in ("stream", "resume", "resume_clarify")}
+    # A flow's test run streams for as long as the flow runs, like a chat turn: counted with them, so it does not hold
+    # one of the slots meant for quick requests.
+    flow_run = re.compile(re.escape(f"{api_prefix}/flows/") + r"[^/]+/run")
     never = {"/", "/docs", "/redoc", "/openapi.json", f"{api_prefix}/chat/stop"}
 
     def classify(scope: Scope) -> str | None:
         path = scope["path"].rstrip("/") or "/"
         if path in never or path.startswith(f"{api_prefix}/health"):
             return None
-        if scope["method"] == "POST" and path in chat_runs:
+        if scope["method"] == "POST" and (path in chat_runs or flow_run.fullmatch(path)):
             return "chat"
         return "default"
 

@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     # research tasks it has to finish. The pod's terminationGracePeriodSeconds must be longer, since uvicorn first waits
     # for open connections (the streams of runs the browser is still attached to) and only then drains the rest.
     SHUTDOWN_DRAIN_SECONDS: int = 600
+    # A chat stream sends an SSE comment after this many silent seconds, so that no proxy on the way (ingress nginx 300 s,
+    # Kong 60 s by default) closes it mid-turn. 0 turns it off. See app/core/sse.py.
+    SSE_HEARTBEAT_SECONDS: float = 15.0
 
     # jarvis-conversation-service — owns the conversations/subagent_traces
     # tables since the Chapter 2 decomposition; see app/clients/conversation_client.py.

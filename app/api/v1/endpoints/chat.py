@@ -10,7 +10,9 @@ from app.agents.tools.files import sandbox_name
 from app.api.deps import CurrentUser, get_current_user
 from app.clients import conversation_client
 from app.core import observability
+from app.core.config import settings
 from app.core.conversation_lock import Lease, conversation_locks
+from app.core.sse import with_heartbeat
 from app.db import attachment_repository, feedback_repository
 from app.schemas.chat import (
     DEFAULT_MODEL,
@@ -80,7 +82,7 @@ async def chat_stream(
         lease.release()
         raise
     return StreamingResponse(
-        chat_service.guarded(lease, chat_service.stream(
+        with_heartbeat(chat_service.guarded(lease, chat_service.stream(
             request.thread_id,
             request.content,
             graph,
@@ -90,7 +92,7 @@ async def chat_stream(
             request.subagent_model,
             request.web_search,
             request.unattended,
-        )),
+        )), settings.SSE_HEARTBEAT_SECONDS),
         media_type="text/event-stream",
     )
 
@@ -109,7 +111,7 @@ async def chat_resume(
         lease.release()
         raise
     return StreamingResponse(
-        chat_service.guarded(lease, chat_service.resume(
+        with_heartbeat(chat_service.guarded(lease, chat_service.resume(
             request.thread_id,
             request.decision,
             graph,
@@ -117,7 +119,7 @@ async def chat_resume(
             model,
             subagent_model,
             request.web_search,
-        )),
+        )), settings.SSE_HEARTBEAT_SECONDS),
         media_type="text/event-stream",
     )
 
@@ -234,7 +236,7 @@ async def chat_resume_clarify(
         lease.release()
         raise
     return StreamingResponse(
-        chat_service.guarded(lease, chat_service.resume_clarify(
+        with_heartbeat(chat_service.guarded(lease, chat_service.resume_clarify(
             request.thread_id,
             request.answer,
             graph,
@@ -242,7 +244,7 @@ async def chat_resume_clarify(
             model,
             subagent_model,
             request.web_search,
-        )),
+        )), settings.SSE_HEARTBEAT_SECONDS),
         media_type="text/event-stream",
     )
 

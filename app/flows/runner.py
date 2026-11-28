@@ -79,6 +79,7 @@ async def stream_flow(flow: ParsedFlow, inputs: dict, config: dict, *, llm=None,
     """Run, yielding what happens:
         {"type": "node", "node", "node_type", "phase": "start" | "end", "output"?}  a node starting / done (its output)
         {"type": "token", "node", "content"}                                     a model token, and whose
+        {"type": "tool", "node", "name", "input"}                                a tool a step called
         {"type": "result", "text"}  or  {"type": "error", "node", "message"}     last
     Inputs are checked before anything runs: a FlowInputError is raised, not yielded."""
     initial = _initial(flow, inputs)
@@ -91,6 +92,11 @@ async def stream_flow(flow: ParsedFlow, inputs: dict, config: dict, *, llm=None,
                 if kind == "on_custom_event" and ev["name"] == FLOW_NODE_EVENT:
                     data = dict(ev["data"])
                     yield {"type": "node", "node": data.pop("node"), "node_type": data.pop("type"), **data}
+                elif kind == "on_tool_start" and ev.get("metadata", {}).get("langgraph_node"):
+                    # a tool a step called: a Tool step's own, or one an LLM step's model chose to call
+                    args = dict(ev["data"].get("input") or {})
+                    args.pop("label", None)
+                    yield {"type": "tool", "node": ev["metadata"]["langgraph_node"], "name": ev["name"], "input": args}
                 elif kind == "on_chat_model_stream":
                     content = content_text(ev["data"]["chunk"].content)
                     if content:

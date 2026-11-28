@@ -27,6 +27,7 @@ MAX_NODES = 50
 MAX_EDGES = 100
 MAX_TEXT = 20_000          # a prompt, a template, a tool argument
 MAX_FIELDS = 20
+MAX_TOOL_CALLS = 20      # what an LLM step with tools may be allowed at most
 
 IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,31}$")
 RESERVED_IDS = {"inputs", "outputs"}   # the flow state's keys (compiler.FlowState); a node cannot share a name with one
@@ -52,6 +53,10 @@ class LLMConfig(BaseModel):
     system: str = Field(default="", max_length=MAX_TEXT)
     model: str | None = None          # None: the model of the run (the conversation's)
     output: Literal["text", "json"] = "text"
+    # Tools the model may call itself, as it decides (an "agent" step), at most `max_tool_calls` times in all. Unlike
+    # a Tool step, which always runs once with the arguments written into it.
+    tools: list[str] = Field(default_factory=list, max_length=10)
+    max_tool_calls: int = Field(default=5, ge=1, le=MAX_TOOL_CALLS)
 
 
 class ToolConfig(BaseModel):
@@ -275,6 +280,12 @@ def _check_node(n: ParsedNode, nodes, ancestors: set[str], tools, models) -> lis
             problems.append(Problem("Two fields have the same name.", n.id))
     if n.type == "llm" and c.model and models is not None and c.model not in models:
         problems.append(Problem(f"Unknown model '{c.model}'.", n.id))
+    if n.type == "llm":
+        for name in c.tools:
+            if name not in tools:
+                problems.append(Problem(f"'{name}' is not a tool a flow can use.", n.id))
+        if len(set(c.tools)) != len(c.tools):
+            problems.append(Problem("A tool is listed twice.", n.id))
     if n.type == "tool":
         spec = tools.get(c.tool)
         if spec is None:

@@ -9,12 +9,13 @@ events. Run inside a chat turn, all of it reaches the turn's astream_events with
 parent ids; run on its own, runner.stream_flow reads the same events.
 """
 
+import asyncio
 import json
 import re
 from typing import Annotated, Any, TypedDict
 
 from langchain_core.callbacks import adispatch_custom_event
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_core.runnables.config import patch_config
 from langchain_core.tools import BaseTool
@@ -107,6 +108,54 @@ def _coerce_arg(value: str, schema: dict, name: str) -> Any:
     return value
 
 
+_LIMIT_REACHED = ("Not run: this step's limit of tool calls is reached. Answer now, with what you have, and say what "
+                  "you could not find out.")
+
+
+async def _call_tool(node: ParsedNode, tool: BaseTool | None, call: dict, config: RunnableConfig) -> ToolMessage:
+    """One tool call the model made. A failure goes back to the model as an error result, for it to work around."""
+    def reply(content: str, error: bool = False) -> ToolMessage:
+        return ToolMessage(content, tool_call_id=call["id"], name=call["name"], status="error" if error else "success")
+
+    if tool is None:
+        return reply(f"There is no tool '{call['name']}' in this step.", error=True)
+    args = dict(call.get("args") or {})
+    if "label" in (tool.tool_call_schema.model_json_schema().get("properties") or {}) and not args.get("label"):
+        args["label"] = f"Step {node.id} · {tool.name}"
+    try:
+        result = await tool.ainvoke(args, config=config)
+    except Exception as e:  # noqa: BLE001
+        return reply(f"{type(e).__name__}: {e}", error=True)
+    return reply(result if isinstance(result, str) else json.dumps(result, ensure_ascii=False))
+
+
+async def _use_tools(node: ParsedNode, ask, llm, messages: list[BaseMessage], tool_list: list[BaseTool], budget: int,
+                     config: RunnableConfig) -> tuple[AIMessage, list[dict]]:
+    """An LLM step with tools: the model calls them as it decides, up to `budget` calls in all, then answers. At the
+    limit it gets one last turn in which it may not call tools (tool_choice="none"), the way SoftHardToolCallLimit-
+    Middleware ends a chat turn, so the step ends with an answer rather than with nothing."""
+    by_name = {t.name: t for t in tool_list}
+    free = llm.bind_tools(tool_list)
+    msgs = list(messages)
+    done: list[dict] = []
+    while True:
+        last_turn = len(done) >= budget
+        reply = await ask(msgs, llm.bind_tools(tool_list, tool_choice="none") if last_turn else free)
+        if not reply.tool_calls:
+            return reply, done
+        if last_turn:
+            raise FlowNodeError(node.id, f"The model kept calling tools after its limit of {budget} calls.")
+        msgs.append(reply)
+        allowed = reply.tool_calls[: budget - len(done)]
+        # `label` only names the call's badge in the chat; it is not part of what the tool was asked
+        done += [{"name": tc["name"], "args": {k: v for k, v in (tc.get("args") or {}).items() if k != "label"}}
+                 for tc in allowed]
+        results = await asyncio.gather(*(_call_tool(node, by_name.get(tc["name"]), tc, config) for tc in allowed))
+        msgs += results
+        msgs += [ToolMessage(_LIMIT_REACHED, tool_call_id=tc["id"], name=tc["name"], status="error")
+                 for tc in reply.tool_calls[len(allowed):]]
+
+
 def _preview(value: dict) -> dict:
     return {k: (v[:PREVIEW_CHARS] + "…" if isinstance(v, str) and len(v) > PREVIEW_CHARS else v) for k, v in value.items()}
 
@@ -148,19 +197,28 @@ def compile_flow(flow: ParsedFlow, *, llm=None, tools: dict[str, BaseTool] | Non
                 # ensure_config), so a key that is only missing comes back from the node's config.
                 call_config = patch_config(config, configurable={**dict.fromkeys(_MODEL_KEYS), "model": c.model})
 
-            async def call(msgs):
-                # Inside a RunnableLambda, so that the model reads `call_config`'s configurable (ThinkingChatOpenAI
-                # takes the model to use from there) rather than the node's.
-                return await llm.ainvoke(msgs)
+            async def ask(msgs: list[BaseMessage], model) -> AIMessage:
+                async def call(m):
+                    # Inside a RunnableLambda, so that the model reads `call_config`'s configurable (ThinkingChatOpenAI
+                    # takes the model to use from there) rather than the node's.
+                    return await model.ainvoke(m)
+                return await RunnableLambda(call, name=f"{node.id}.model").ainvoke(msgs, config=call_config)
 
-            reply = await RunnableLambda(call, name=f"{node.id}.model").ainvoke(messages, config=call_config)
+            if c.tools:
+                reply, calls = await _use_tools(node, ask, llm, messages, [tools[t] for t in c.tools], c.max_tool_calls,
+                                                config)
+            else:
+                reply, calls = await ask(messages, llm), None
             text = _THINK.sub("", content_text(reply.content)).strip()
+            out: dict[str, Any] = {"text": text}
+            if calls is not None:
+                out["tool_calls"] = calls          # shown with the step; not a field other steps can reference
             if c.output == "json":
                 try:
-                    return {"text": text, "json": _parse_json(text)}
+                    out["json"] = _parse_json(text)
                 except ValueError:
                     raise FlowNodeError(node.id, f"The model was asked for JSON and answered: {text[:300]!r}") from None
-            return {"text": text}
+            return out
 
         async def run(state: FlowState, config: RunnableConfig) -> dict:
             await adispatch_custom_event(FLOW_NODE_EVENT, {"node": node.id, "type": node.type, "phase": "start"},

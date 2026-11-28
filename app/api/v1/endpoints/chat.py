@@ -1,4 +1,5 @@
 import logging
+import shlex
 from pathlib import PurePosixPath
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
@@ -24,6 +25,7 @@ from app.schemas.chat import (
     ResumeRequest,
     StopRequest,
 )
+from app.services import sandbox_files
 from app.services.chat_service import chat_service
 
 logger = logging.getLogger(__name__)
@@ -141,10 +143,11 @@ async def chat_attachment(attachment_id: str, user: CurrentUser = Depends(get_cu
 MAX_ATTACHMENT_BYTES = 50 << 20
 
 
-async def _free_name(thread_id: str, name: str) -> str:
+async def _free_name(thread_id: str, name: str, folder: str = "") -> str:
     """`name`, or `name (2).ext`, `name (3).ext`... so an attachment never
-    overwrites a file already in the sandbox."""
-    listing = await sandbox_manager.exec_bash(thread_id, "ls -1A")
+    overwrites a file already in the sandbox (in `folder`, the working
+    directory by default)."""
+    listing = await sandbox_manager.exec_bash(thread_id, "ls -1A -- " + shlex.quote(folder) if folder else "ls -1A")
     taken = set((listing.get("stdout") or "").splitlines())
     if name not in taken:
         return name
@@ -163,6 +166,7 @@ async def _free_name(thread_id: str, name: str) -> str:
 async def chat_sandbox_upload(
     thread_id: str = Form(...),
     file: UploadFile = File(...),
+    folder: str = Form(""),
     user: CurrentUser = Depends(get_current_user),
 ):
     """A file attached to a chat message. It goes into this conversation's
@@ -170,6 +174,10 @@ async def chat_sandbox_upload(
     agent can open it with its sandbox tools and it disappears with the
     conversation. Returns the name it was saved under."""
     await _check_owns_thread(thread_id, user)
+    try:
+        folder = sandbox_files.clean(folder, allow_root=True)    # the Sandbox panel uploads into the folder it shows
+    except sandbox_files.SandboxPathError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
     chunks, size = [], 0
     while chunk := await file.read(1 << 20):
         size += len(chunk)
@@ -178,7 +186,9 @@ async def chat_sandbox_upload(
         chunks.append(chunk)
     content = b"".join(chunks)
     try:
-        name = await _free_name(thread_id, sandbox_name(file.filename or "file"))
+        name = await _free_name(thread_id, sandbox_name(file.filename or "file"), folder)
+        if folder:
+            name = f"{folder}/{name}"
         await sandbox_manager.write_file(thread_id, name, content)
     except SandboxRequestError as e:
         raise HTTPException(status_code=503, detail="Sandbox unavailable") from e

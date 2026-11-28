@@ -529,6 +529,23 @@ async def _get_or_create_sandbox(thread_id: str):
         return sandbox
 
 
+async def sandbox_state(thread_id: str) -> str:
+    """What the conversation's sandbox is now, without creating or waking one: "none" (it never had one, or it was
+    deleted), "paused" (its pod is gone and its files are kept until the next use wakes it) or "running"."""
+    client = _get_client()
+    namespace = settings.AGENTSANDBOX_NAMESPACE
+    selector = f"{_THREAD_LABEL}={_label_value(thread_id)}"
+    names = await client.list_all_sandboxes(namespace, label_selector=selector)   # also readies the k8s helper
+    if not names:
+        return "none"
+    claims = [c for c in await _list_objects(_CLAIM_API, namespace) if c["metadata"]["name"] == names[0]]
+    if not claims:
+        return "none"
+    sandbox_name = ((claims[0].get("status") or {}).get("sandbox") or {}).get("name", "")
+    sandboxes = {s["metadata"]["name"]: s for s in await _list_objects(_SANDBOX_API, namespace)}
+    return "running" if _has_pod(claims[0], sandboxes.get(sandbox_name)) else "paused"
+
+
 async def exec_bash(thread_id: str, command: str) -> dict:
     """Returns {stdout, stderr, exit_code, timed_out}; plus `error` when no sandbox could be had at all."""
     async with _using(thread_id):

@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     # upstream's own quickstart YAML creates.
     AGENTSANDBOX_NAMESPACE: str = "default"
     AGENTSANDBOX_WARMPOOL: str = "python-sandbox-pool"
+    # The sandbox runtime's own files at the top of its working directory (the stock python runtime's server), which the
+    # user's sandbox file browser neither shows nor lets anyone delete or rename. Comma-separated.
+    SANDBOX_HIDDEN_ENTRIES: str = "main.py,requirements.txt,__pycache__"
     # How long a conversation's sandbox may sit idle before the cluster stops
     # it. Behaves as an idle timeout rather than a fixed deadline because
     # sandbox_manager pushes the expiry out on every use. Expiry deletes the

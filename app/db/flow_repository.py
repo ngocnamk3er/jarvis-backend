@@ -103,3 +103,17 @@ async def list_enabled(user_id: str) -> list[dict]:
         )
         return [dict(zip(_FULL, r, strict=True)) for r in await cur.fetchall()]
 
+
+async def set_enabled(user_id: str, flow_id: str, enabled: bool) -> dict | None:
+    """Switch a flow on or off for the user's conversations. Not a new version: the flow itself is unchanged."""
+    async with _pool().connection() as conn:
+        cur = await conn.execute(
+            f"""
+            UPDATE {connection.SCHEMA}.user_flows SET enabled = %s, updated_at = now()
+            WHERE user_id = %s AND id = %s::uuid
+            RETURNING {_SUMMARY_COLS}
+            """,
+            (enabled, user_id, flow_id),
+        )
+        r = await cur.fetchone()
+    return dict(zip(_SUMMARY, r, strict=True)) if r else None

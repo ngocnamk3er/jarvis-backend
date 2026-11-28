@@ -57,6 +57,12 @@ class MemoryRepo:
                    version=row["version"] + 1)
         return row
 
+    async def set_enabled(self, user_id, flow_id, enabled):
+        row = self._mine(user_id, flow_id)
+        if row is not None:
+            row["enabled"] = enabled
+        return row
+
     async def delete_flow(self, user_id, flow_id):
         return self.rows.pop(flow_id, None) is not None if self._mine(user_id, flow_id) else False
 
@@ -64,7 +70,7 @@ class MemoryRepo:
 @pytest.fixture
 def repo(monkeypatch):
     r = MemoryRepo()
-    for name in ("list_flows", "count_flows", "get_flow", "create_flow", "update_flow", "delete_flow"):
+    for name in ("list_flows", "count_flows", "get_flow", "create_flow", "update_flow", "delete_flow", "set_enabled"):
         monkeypatch.setattr(flow_repository, name, getattr(r, name))
     monkeypatch.setattr(catalog, "flow_tools", lambda: TOOLS)
     fake_llm = EchoModel()
@@ -201,3 +207,13 @@ async def test_flows_can_be_turned_off(repo, monkeypatch):
 def test_slugs():
     assert flow_service.slugify("Đọc báo & tóm tắt!") == "doc_bao_tom_tat"
     assert flow_service.slugify("???") == "flow"
+
+
+async def test_a_flow_is_switched_off_and_on_without_a_new_version(repo):
+    async with client_for("u1") as c:
+        flow_id = (await create(c)).json()["id"]
+        r = await c.patch(f"/flows/{flow_id}", json={"enabled": False})
+        assert r.status_code == 200 and r.json()["enabled"] is False and r.json()["version"] == 1
+    async with client_for("someone_else") as c:
+        assert (await c.patch(f"/flows/{flow_id}", json={"enabled": True})).status_code == 404
+    assert repo.rows[flow_id]["enabled"] is False

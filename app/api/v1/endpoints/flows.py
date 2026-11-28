@@ -31,6 +31,10 @@ class ValidateBody(BaseModel):
     definition: dict[str, Any]
 
 
+class EnabledBody(BaseModel):
+    enabled: bool
+
+
 class RunBody(BaseModel):
     inputs: dict[str, Any] = Field(default_factory=dict)
     model: str | None = None
@@ -65,6 +69,12 @@ async def get_flow(flow_id: str, user: CurrentUser = Depends(get_current_user)):
 async def update_flow(flow_id: str, body: FlowBody, user: CurrentUser = Depends(get_current_user)):
     return await flow_service.update_flow(user.sub, flow_id, body.name, body.description, body.definition,
                                           body.enabled)
+
+
+@router.patch("/{flow_id}")
+async def set_enabled(flow_id: str, body: EnabledBody, user: CurrentUser = Depends(get_current_user)):
+    """Switch a flow on or off for chat, without saving it again."""
+    return await flow_service.set_enabled(user.sub, flow_id, body.enabled)
 
 
 @router.delete("/{flow_id}", status_code=204)

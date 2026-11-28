@@ -125,6 +125,15 @@ async def update_flow(user_id: str, flow_id: str, name: str, description: str, d
     return row
 
 
+async def set_enabled(user_id: str, flow_id: str, enabled: bool) -> dict:
+    _check_enabled()
+    _check_id(flow_id)
+    row = await flow_repository.set_enabled(user_id, flow_id, enabled)
+    if row is None:
+        raise _not_found()
+    return row
+
+
 async def delete_flow(user_id: str, flow_id: str) -> None:
     _check_enabled()
     _check_id(flow_id)

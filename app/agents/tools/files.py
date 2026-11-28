@@ -15,8 +15,11 @@ but `workspace_copy_to_sandbox` are read-only, and `workspace_copy_to_sandbox` o
 user already owns into that user's own throwaway sandbox — the same thing
 web_fetch does with a page it just downloaded."""
 
+import asyncio
 import re
+import unicodedata
 import uuid
+from typing import NamedTuple
 
 import httpx
 from langchain_core.runnables import RunnableConfig
@@ -25,9 +28,10 @@ from langchain_core.tools import tool
 from app.agents import retrieval
 from app.agents.tools import sandbox_manager
 from app.agents.tools.sandbox_manager import get_thread_id
-from app.agents.tools.text_window import WindowError, read_window
 from app.agents.tools.sandbox_save import save_and_stub
+from app.agents.tools.text_window import WindowError, read_window
 from app.clients import file_client
+from app.core import spaces
 
 # The bytes sit in backend memory between the two hops (workspace → here →
 # sandbox), so this bounds memory, not sandbox disk. Well above the office
@@ -42,6 +46,47 @@ _MAX_NAME_CHARS = 80
 
 def _user_id(config: RunnableConfig) -> str:
     return config.get("configurable", {}).get("user_id", "")
+
+
+def _departments(config: RunnableConfig) -> list[dict]:
+    """The departments whose documents this user can read: [{id, name, owner, can_edit}], put into the run's
+    configurable by the chat endpoint from the user's token (app/core/spaces.py: for_agent)."""
+    return config.get("configurable", {}).get("file_spaces") or []
+
+
+class _Where(NamedTuple):
+    owner: str  # whose files, for the file service
+    path: str  # the path within them
+    prefix: str  # what goes in front of their paths when shown to the model: "" or "/@Kế toán"
+    space: str  # the space id citations carry: "personal" or "dept:<slug>"
+
+
+def _same(a: str, b: str) -> bool:
+    fold = lambda s: unicodedata.normalize("NFC", s).casefold().strip()  # noqa: E731
+    return fold(a) == fold(b) or spaces.slug(a) == spaces.slug(b)
+
+
+def _locate(config: RunnableConfig, path: str) -> _Where | str:
+    """Where `path` points: "/@Kế toán/quy-che.pdf" is in the Kế toán department's documents, anything else in the
+    user's own. An error message when it names a department this user is not in."""
+    inner = (path or "/").strip()
+    bare = inner.lstrip("/")
+    if not bare.startswith("@"):
+        return _Where(_user_id(config), inner or "/", "", spaces.PERSONAL)
+    head, _, rest = bare[1:].partition("/")
+    for dept in _departments(config):
+        if _same(head, dept["name"]):
+            return _Where(dept["owner"], "/" + rest, f"/@{dept['name']}", dept["id"])
+    known = ", ".join(f"/@{d['name']}" for d in _departments(config))
+    return (f"Error: no department '{head}' among this user's. "
+            + (f"Department documents they can read: {known}." if known else "They are in no department."))
+
+
+def _owners(config: RunnableConfig) -> list[_Where]:
+    """Every space a search covers: the user's own files, then each department's."""
+    return [_Where(_user_id(config), "/", "", spaces.PERSONAL)] + [
+        _Where(d["owner"], "/", f"/@{d['name']}", d["id"]) for d in _departments(config)
+    ]
 
 
 def _format_size(n: int | None) -> str:
@@ -65,17 +110,24 @@ async def list_files(path: str, config: RunnableConfig) -> str:
     """List the folders and files at a path in the user's persistent file
     workspace (uploaded via the UI — separate from bash's ephemeral sandbox).
 
+    The user's departments' shared documents show at the root as `@<department>/` folders; list one with e.g.
+    "/@Kế toán" or "/@Kế toán/quy-che".
+
     Args:
         path: Root-relative path to list. Pass "/" for the workspace root,
             or e.g. "/docs/2024" for a subfolder.
     """
+    where = _locate(config, path)
+    if isinstance(where, str):
+        return where
     try:
-        nodes = await file_client.list_tree(_user_id(config), path)
+        nodes = await file_client.list_tree(where.owner, where.path)
     except httpx.HTTPStatusError as e:
         return f"Error: {e.response.text}" + (_NOT_IN_WORKSPACE if e.response.status_code == 404 else "")
-    if not nodes:
+    departments = _departments(config) if not where.prefix and where.path.strip("/") == "" else []
+    if not nodes and not departments:
         return f"(empty) {path}"
-    lines = []
+    lines = [f"🏢 @{d['name']}/ (the {d['name']} department's shared documents)" for d in departments]
     for n in nodes:
         if n["type"] == "folder":
             lines.append(f"📁 {n['name']}/")
@@ -105,12 +157,15 @@ async def read_file(
     read a long document in order, one piece at a time.
 
     Args:
-        path: Root-relative file path, e.g. "/docs/2024/report.pdf".
+        path: Root-relative file path, e.g. "/docs/2024/report.pdf", or "/@Kế toán/quy-che.pdf" for a department's.
         offset: First line to return, counting from 1.
         limit: How many lines to return (at most 2,000).
     """
+    where = _locate(config, path)
+    if isinstance(where, str):
+        return where
     try:
-        node = await file_client.resolve_path(_user_id(config), path)
+        node = await file_client.resolve_path(where.owner, where.path)
     except httpx.HTTPStatusError as e:
         return f"Error: {e.response.text}"
     if node is None:
@@ -185,11 +240,13 @@ async def fetch_file(path: str, config: RunnableConfig) -> str:
     trip through bash.
 
     Args:
-        path: Root-relative file path, e.g. "/reports/q3-2024.xlsx".
+        path: Root-relative file path, e.g. "/reports/q3-2024.xlsx", or "/@Kế toán/so-lieu.xlsx" for a department's.
     """
-    user_id = _user_id(config)
+    where = _locate(config, path)
+    if isinstance(where, str):
+        return where
     try:
-        node = await file_client.resolve_path(user_id, path)
+        node = await file_client.resolve_path(where.owner, where.path)
     except httpx.HTTPStatusError as e:
         return f"Error: {e.response.text}"
     if node is None:
@@ -205,7 +262,7 @@ async def fetch_file(path: str, config: RunnableConfig) -> str:
         )
 
     try:
-        content, mime_type, _ = await file_client.get_content(user_id, node["id"])
+        content, mime_type, _ = await file_client.get_content(where.owner, node["id"])
     except httpx.HTTPStatusError as e:
         return f"Error: {e.response.text}"
 
@@ -264,6 +321,30 @@ def _snippet(text: str, query: str, width: int = 300) -> str:
     return _window(text, idx, width)
 
 
+async def _search_each(where: list[_Where], search, top_k: int, ranked: bool) -> list[dict]:
+    """`search(owner)` in every space at once, each hit tagged with its owner, merged into one list of top_k: by score
+    when the scores compare (the hybrid search's are rank-based, the same scale in every space), else taking each
+    space's next hit in turn (an exact search has no ranking of its own)."""
+    found = await asyncio.gather(*(search(w.owner) for w in where))
+    lists = [[{**r, "owner": w.owner} for r in hits] for w, hits in zip(where, found, strict=True)]
+    if ranked:
+        return sorted((r for hits in lists for r in hits), key=lambda r: r.get("score") or 0, reverse=True)[:top_k]
+    merged: list[dict] = []
+    for i in range(max((len(h) for h in lists), default=0)):
+        merged += [hits[i] for hits in lists if i < len(hits)]
+    return merged[:top_k]
+
+
+def _shown(results: list[dict], where: list[_Where]) -> list[dict]:
+    """Each hit's path as the model addresses it ("/@Kế toán/quy-che.pdf" for a department's file), and its space."""
+    by_owner = {w.owner: w for w in where}
+    shown = []
+    for r in results:
+        w = by_owner.get(r.get("owner") or where[0].owner, where[0])
+        shown.append({**r, "path": w.prefix + r["path"], "space": w.space})
+    return shown
+
+
 def _citation(r: dict, exact: bool = False) -> dict:
     """One hit, shaped for the frontend's source chips and viewer.
 
@@ -299,6 +380,8 @@ def _citation(r: dict, exact: bool = False) -> dict:
     return {
         "file_id": r["file_id"],
         "path": r["path"],
+        # Which space the file is in, so the viewer asks for it there (the Files API's `space`).
+        "space": r.get("space", spaces.PERSONAL),
         "page_start": r.get("page_start", 0),
         "page_end": r.get("page_end", 0),
         "boxes": boxes,
@@ -346,21 +429,24 @@ async def search_files(
     need a path — one of these results, one from a listing, or one the
     user gave you.
 
+    It searches the user's departments' shared documents too; their paths
+    start with `/@<department>/`.
+
     Args:
         query: What to find — a natural-language description (exact=False)
             or the exact text to match (exact=True).
         top_k: Max number of chunks to return — 5 is a reasonable default.
         exact: True for exact-phrase matching instead of semantic search.
     """
-    user_id = _user_id(config)
+    where = _owners(config)
     trace: list[str] = []
     try:
         if exact:
-            results = await file_client.search_fulltext(user_id, query, top_k)
+            results = await _search_each(where, lambda o: file_client.search_fulltext(o, query, top_k), top_k, False)
         elif retrieval.enabled():
-            results, trace = await retrieval.agentic_search(user_id, query, top_k)
+            results, trace = await retrieval.agentic_search([w.owner for w in where], query, top_k)
         else:
-            results = await file_client.search_vector(user_id, query, top_k)
+            results = await _search_each(where, lambda o: file_client.search_vector(o, query, top_k), top_k, True)
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 400:
             return (
@@ -368,6 +454,7 @@ async def search_files(
                 "workspace_list_files instead."
             ), None
         return f"Error: {e.response.text}", None
+    results = _shown(results, where)
     if not results:
         kind = "exact matches" if exact else "semantic matches"
         return f"No {kind} for '{query}'", None

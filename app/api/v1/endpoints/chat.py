@@ -10,7 +10,7 @@ from app.agents.tools import sandbox_manager
 from app.agents.tools.files import sandbox_name
 from app.api.deps import CurrentUser, get_current_user
 from app.clients import conversation_client
-from app.core import observability
+from app.core import observability, spaces
 from app.core.config import settings
 from app.core.conversation_lock import Lease, conversation_locks
 from app.core.sse import with_heartbeat
@@ -94,6 +94,7 @@ async def chat_stream(
             request.subagent_model,
             request.web_search,
             request.unattended,
+            file_spaces=spaces.for_agent(user.groups),
         )), settings.SSE_HEARTBEAT_SECONDS),
         media_type="text/event-stream",
     )
@@ -121,6 +122,7 @@ async def chat_resume(
             model,
             subagent_model,
             request.web_search,
+            file_spaces=spaces.for_agent(user.groups),
         )), settings.SSE_HEARTBEAT_SECONDS),
         media_type="text/event-stream",
     )
@@ -254,6 +256,7 @@ async def chat_resume_clarify(
             model,
             subagent_model,
             request.web_search,
+            file_spaces=spaces.for_agent(user.groups),
         )), settings.SSE_HEARTBEAT_SECONDS),
         media_type="text/event-stream",
     )

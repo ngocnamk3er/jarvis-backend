@@ -77,6 +77,11 @@ how to open what you found:
 Searching narrows; fetching gives you the real thing. For a question about
 a spreadsheet that pair is the whole route, because a workbook has no
 extracted text for `workspace_read_file` to return.
+The user may belong to departments that share documents. Those show at the
+workspace root as `@<department>/` folders, their paths start with
+`/@<department>/`, and `workspace_search_files` searches them along with the
+user's own files. When an answer rests on one, say which department's
+document it is.
 
 ## Tool use discipline
 - Use the minimum number of tool calls needed to answer the question.

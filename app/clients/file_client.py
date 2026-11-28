@@ -8,6 +8,7 @@ No retry/circuit breaker here either, for the same reason conversation_client
 has none — see that module's docstring.
 """
 from datetime import datetime
+from urllib.parse import unquote
 
 import httpx
 from pydantic import BaseModel
@@ -97,7 +98,9 @@ async def get_content(user_id: str, node_id: str) -> tuple[bytes, str, str]:
     mime_type = resp.headers.get("content-type", "application/octet-stream")
     filename = "download"
     disposition = resp.headers.get("content-disposition", "")
-    if 'filename="' in disposition:
+    if "filename*=UTF-8''" in disposition:
+        filename = unquote(disposition.split("filename*=UTF-8''", 1)[1].split(";", 1)[0].strip())
+    elif 'filename="' in disposition:
         filename = disposition.split('filename="', 1)[1].split('"', 1)[0]
     return resp.content, mime_type, filename
 

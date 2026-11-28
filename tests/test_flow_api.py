@@ -84,7 +84,7 @@ def repo(monkeypatch):
 def client_for(user: str) -> httpx.AsyncClient:
     app = FastAPI()
     app.include_router(flows_endpoint.router, prefix="/flows")
-    app.dependency_overrides[get_current_user] = lambda: type("U", (), {"sub": user})()
+    app.dependency_overrides[get_current_user] = lambda: type("U", (), {"sub": user, "groups": ()})()
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
 
 

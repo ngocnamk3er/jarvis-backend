@@ -64,6 +64,13 @@ class Settings(BaseSettings):
     # restricts this to lowercase letters, digits, "-" and "_".
     LANGFUSE_ENVIRONMENT: str = "development"
 
+    # Department document spaces (app/core/spaces.py). Each Keycloak group directly under DEPARTMENTS_GROUP is a
+    # department, its name shown as is; its members read the department's files, and the members of its
+    # DEPARTMENT_EDITORS_GROUP subgroup also add, rename and delete them. The token carries the groups as full paths
+    # (the client's `groups` mapper, full.path=true).
+    DEPARTMENTS_GROUP: str = "/departments"
+    DEPARTMENT_EDITORS_GROUP: str = "editors"
+
     # kubernetes-sigs/agent-sandbox — backs the bash tool + present_file, one
     # dedicated sandbox pod per conversation. See sandbox_manager.py and
     # SANDBOX-SETUP.md. The warm pool name must match a SandboxWarmPool that

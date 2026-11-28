@@ -272,6 +272,7 @@ def _make_config(
     web_search: bool = True,
     unattended: bool = False,
     model_info: dict | None = None,
+    file_spaces: list[dict] | None = None,
 ) -> dict:
     # start_research is research done on the web too — only the tool that
     # begins a task is switched off; checking or cancelling one already
@@ -296,6 +297,9 @@ def _make_config(
             "disabled_tools": disabled,
             # Read by _bash_needs_approval (app/agents/graph.py).
             "unattended": unattended,
+            # The departments whose documents the workspace tools may read (app/core/spaces.py: for_agent), from the
+            # token of the request that started this turn.
+            "file_spaces": file_spaces or [],
             # What a model the user added looks like to the rest of the turn (user_models.info): whether it sees
             # images, its context window, and that the server's fallback models must not answer for it. Never its key.
             **(model_info or {}),
@@ -904,6 +908,7 @@ class ChatService:
         subagent_model: str | None = None,
         web_search: bool = True,
         unattended: bool = False,
+        file_spaces: list[dict] | None = None,
     ):
         try:
             model_info = await user_models.info(user_id, model)
@@ -947,7 +952,7 @@ class ChatService:
                 return
 
         config = _make_config(thread_id, user_id, thinking_effort, model, subagent_model,
-                              web_search, unattended, model_info)
+                              web_search, unattended, model_info, file_spaces)
         async for chunk in self._run_graph(
             {"messages": [HumanMessage(content=content)]}, config, graph
         ):
@@ -962,6 +967,7 @@ class ChatService:
         model: str | None = None,
         subagent_model: str | None = None,
         web_search: bool = True,
+        file_spaces: list[dict] | None = None,
     ):
         """Resume a bash-approval HITL interrupt. HumanInTheLoopMiddleware
         expects a list of one decision dict per pending action_request —
@@ -974,7 +980,7 @@ class ChatService:
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
             return
         config = _make_config(thread_id, user_id, model=model, subagent_model=subagent_model, web_search=web_search,
-                              model_info=model_info)
+                              model_info=model_info, file_spaces=file_spaces)
 
         # Count pending action_requests so we send exactly N decisions
         n = 1
@@ -1000,6 +1006,7 @@ class ChatService:
         model: str | None = None,
         subagent_model: str | None = None,
         web_search: bool = True,
+        file_spaces: list[dict] | None = None,
     ):
         """Resume an ask_user interrupt. Unlike resume() above, the Command's
         resume value is the raw answer string itself — ask_user's interrupt()
@@ -1012,7 +1019,7 @@ class ChatService:
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
             return
         config = _make_config(thread_id, user_id, model=model, subagent_model=subagent_model, web_search=web_search,
-                              model_info=model_info)
+                              model_info=model_info, file_spaces=file_spaces)
         async for chunk in self._run_graph(Command(resume=answer), config, graph):
             yield chunk
 

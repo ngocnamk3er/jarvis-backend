@@ -141,7 +141,8 @@ async def delete_flow(user_id: str, flow_id: str) -> None:
         raise _not_found()
 
 
-async def prepare_run(user_id: str, flow_id: str, inputs: dict, model: str | None) -> tuple[ParsedFlow, dict]:
+async def prepare_run(user_id: str, flow_id: str, inputs: dict, model: str | None,
+                      file_spaces: list[dict] | None = None) -> tuple[ParsedFlow, dict]:
     """The saved flow ready to run, and the run's config; 404 / 400 before anything runs."""
     row = await get_flow(user_id, flow_id)
     parsed = _valid(row["definition"])          # saved flows are valid; the tools on offer may have changed since
@@ -161,6 +162,8 @@ async def prepare_run(user_id: str, flow_id: str, inputs: dict, model: str | Non
         "configurable": {
             "thread_id": thread_id,
             "user_id": user_id,
+            # The departments whose documents a workspace tool step may read (app/core/spaces.py: for_agent).
+            "file_spaces": file_spaces or [],
             "model": model,
             "thinking_effort": "high",
             # No sandbox behind a flow run: web_search/web_fetch cut a long result inline instead of saving it.

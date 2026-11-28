@@ -30,11 +30,11 @@ def api(monkeypatch):
     async def touch(thread_id, model=None, subagent_model=None):
         seen["touch"] = (model, subagent_model)
 
-    async def resume(thread_id, decision, graph, user_id, model, subagent_model, web_search):
+    async def resume(thread_id, decision, graph, user_id, model, subagent_model, web_search, file_spaces=None):
         seen["resume"] = (model, subagent_model)
         yield "data: {}\n\n"
 
-    async def resume_clarify(thread_id, answer, graph, user_id, model, subagent_model, web_search):
+    async def resume_clarify(thread_id, answer, graph, user_id, model, subagent_model, web_search, file_spaces=None):
         seen["clarify"] = (model, subagent_model)
         yield "data: {}\n\n"
 
@@ -45,7 +45,7 @@ def api(monkeypatch):
     app = FastAPI()
     app.state.graph = object()
     app.include_router(chat_endpoint.router, prefix="/chat")
-    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(sub="u1")
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(sub="u1", groups=())
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
     client.seen, client.state = seen, state
     return client

@@ -54,7 +54,7 @@ _RECENT_STEPS = 8
 
 # Run settings a task inherits from the conversation that started it, so the
 # user's model choice and the web-search toggle apply to it too.
-_INHERITED = ("model", "subagent_model", "thinking_effort", "disabled_tools", "user_id")
+_INHERITED = ("model", "subagent_model", "thinking_effort", "disabled_tools", "user_id", "file_spaces")
 
 # Finished tasks kept in the registry, for their error text. Beyond this the
 # oldest are dropped, and a status is judged from the checkpoint alone.

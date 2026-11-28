@@ -12,6 +12,8 @@ bearer_scheme = HTTPBearer(auto_error=True)
 class CurrentUser:
     sub: str
     email: str | None = None
+    # Keycloak group paths from the token, e.g. "/departments/Kế toán/editors" (see app/core/spaces.py).
+    groups: tuple[str, ...] = ()
 
 
 async def get_current_user(
@@ -20,5 +22,10 @@ async def get_current_user(
     try:
         payload = verify_token(creds.credentials)
     except TokenError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    return CurrentUser(sub=payload["sub"], email=payload.get("email"))
+        raise HTTPException(status_code=401, detail="Invalid or expired token") from None
+    groups = payload.get("groups") or []
+    return CurrentUser(
+        sub=payload["sub"],
+        email=payload.get("email"),
+        groups=tuple(g for g in groups if isinstance(g, str)) if isinstance(groups, list) else (),
+    )

@@ -118,22 +118,25 @@ async def _decompose(query: str) -> list[str]:
     return [query]
 
 
-async def _retrieve(user_id: str, queries: list[str], per_query: int) -> list[dict]:
-    """Vector search for each query, merged and deduplicated.
+async def _retrieve(owners: list[str], queries: list[str], per_query: int) -> list[dict]:
+    """Vector search for each query in each owner's files (the user's own, their departments'), merged and
+    deduplicated, each chunk tagged with its `owner`.
 
     Keeps the best score when the same chunk surfaces for several sub-queries —
     that overlap is a signal the chunk is central, not a reason to drop it.
     """
+    pairs = [(o, q) for o in owners for q in queries]
     results = await asyncio.gather(
-        *(file_client.search_vector(user_id, q, per_query) for q in queries),
+        *(file_client.search_vector(o, q, per_query) for o, q in pairs),
         return_exceptions=True,
     )
     merged: dict[tuple, dict] = {}
-    for res in results:
+    for (owner, _), res in zip(pairs, results, strict=True):
         if isinstance(res, BaseException):
             logger.warning("a sub-query failed during retrieval: %s", res)
             continue
         for chunk in res:
+            chunk = {**chunk, "owner": owner}
             key = (chunk["file_id"], chunk["chunk_text"][:120])
             if key not in merged or chunk["score"] > merged[key]["score"]:
                 merged[key] = chunk
@@ -206,7 +209,7 @@ async def _reflect(query: str, candidates: list[dict]) -> tuple[bool, str | None
         return True, None
 
 
-async def agentic_search(user_id: str, query: str, top_k: int) -> tuple[list[dict], list[str]]:
+async def agentic_search(owners: str | list[str], query: str, top_k: int) -> tuple[list[dict], list[str]]:
     """Decompose, retrieve, rerank, and refine once if the first pass missed.
 
     Returns the chosen chunks plus a short trace of what the pipeline did, so
@@ -214,12 +217,13 @@ async def agentic_search(user_id: str, query: str, top_k: int) -> tuple[list[dic
     results than a plain search would have.
     """
     trace: list[str] = []
+    owners = [owners] if isinstance(owners, str) else owners
 
     subqueries = await _decompose(query)
     if len(subqueries) > 1:
         trace.append(f"split into {len(subqueries)}: {'; '.join(subqueries)}")
 
-    candidates = await _retrieve(user_id, subqueries, _CANDIDATE_POOL)
+    candidates = await _retrieve(owners, subqueries, _CANDIDATE_POOL)
     if not candidates:
         return [], trace
 
@@ -235,7 +239,7 @@ async def agentic_search(user_id: str, query: str, top_k: int) -> tuple[list[dic
             return top, trace
 
         trace.append(f"top hits missed the question, retrying with: {followup}")
-        extra = await _retrieve(user_id, [followup], _CANDIDATE_POOL)
+        extra = await _retrieve(owners, [followup], _CANDIDATE_POOL)
         seen = {(c["file_id"], c["chunk_text"][:120]) for c in candidates}
         candidates += [
             c for c in extra if (c["file_id"], c["chunk_text"][:120]) not in seen

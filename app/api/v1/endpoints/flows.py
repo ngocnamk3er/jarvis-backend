@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.api.deps import CurrentUser, get_current_user
+from app.core import spaces
 from app.core.config import settings
 from app.core.sse import with_heartbeat
 from app.flows.runner import stream_flow
@@ -84,7 +85,8 @@ async def delete_flow(flow_id: str, user: CurrentUser = Depends(get_current_user
 
 @router.post("/{flow_id}/run")
 async def run_flow(flow_id: str, body: RunBody, user: CurrentUser = Depends(get_current_user)):
-    parsed, config = await flow_service.prepare_run(user.sub, flow_id, body.inputs, body.model)
+    parsed, config = await flow_service.prepare_run(user.sub, flow_id, body.inputs, body.model,
+                                                    spaces.for_agent(user.groups))
 
     async def lines():
         async for event in stream_flow(parsed, body.inputs, config):

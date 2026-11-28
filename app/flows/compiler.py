@@ -134,7 +134,7 @@ def compile_flow(flow: ParsedFlow, *, llm=None, tools: dict[str, BaseTool] | Non
                 spec = specs[c.tool]
                 args = {k: _coerce_arg(render(v, outputs, types), spec.args[k], k) for k, v in c.args.items()}
                 if "label" in (tool.tool_call_schema.model_json_schema().get("properties") or {}):
-                    args["label"] = node.label or f"Flow step {node.id}"
+                    args["label"] = node.label or f"Step {node.id} · {c.tool}"
                 result = await tool.ainvoke(args, config=config)
                 return {"result": result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)}
             # llm
@@ -189,4 +189,8 @@ def compile_flow(flow: ParsedFlow, *, llm=None, tools: dict[str, BaseTool] | Non
             g.add_edge(preds, i)        # waits for all of them
     for o in flow.output_ids:
         g.add_edge(o, END)
-    return g.compile(name="flow")
+    # checkpointer=False, not left unset: a graph run inside another graph's node (a chat turn's tool) otherwise
+    # inherits that graph's checkpointer as a subgraph, and every flow step was checkpointed into the conversation's
+    # thread (6 checkpoints for a 4-node flow, seen in a test). A flow keeps nothing between runs and has nothing to
+    # resume in version 1.
+    return g.compile(name="flow", checkpointer=False)

@@ -9,6 +9,8 @@ from langgraph.types import Command
 
 from app.agents.llm import build_llm_with_fallback
 from app.agents.middleware import TOOL_CALL_LIMIT_EVENT
+from app.agents.user_flows import is_flow_tool
+from app.flows.compiler import FLOW_NODE_EVENT
 from app.agents.pruning import prune_tool_results
 from app.agents.tools.sandbox_manager import reset as reset_sandbox
 from app.clients import conversation_client
@@ -161,6 +163,11 @@ TODO_TOOL = "write_todos"
 HIDDEN_TOOLS = {"write_todos", "ask_user"}
 
 
+def _nests(tool_name: str | None) -> bool:
+    """A tool whose own steps are shown nested under its badge: a subagent (`task`) or one of the user's flows."""
+    return tool_name == "task" or is_flow_tool(tool_name)
+
+
 class ToolStartEventHandler:
     def handle(self, event: dict, task_run_id: str | None = None) -> list[dict]:
         if event["name"] == TODO_TOOL:
@@ -177,6 +184,9 @@ class ToolStartEventHandler:
             return []
         raw_input = dict(event["data"].get("input") or {})
         label = raw_input.pop("label", None)
+        if label is None and is_flow_tool(event["name"]):
+            flow_name = (event.get("metadata") or {}).get("flow_name")  # the name the user gave it, not flow_<slug>
+            label = f"Flow: {flow_name}" if flow_name else None
         result = {"type": "tool_start", "name": event["name"], "label": label, "input": raw_input or None, "run_id": event.get("run_id", "")}
         if task_run_id:
             result["task_run_id"] = task_run_id
@@ -559,7 +569,8 @@ class ChatService:
 
     @staticmethod
     def _task_tool_call_id(event: dict) -> str | None:
-        """Extract the `task` call's own tool_call_id from its on_tool_end event.
+        """Extract a nesting tool's own tool_call_id from its on_tool_end event: from the Command a `task` returns, or
+        the ToolMessage a flow does.
 
         This is the stable id (matches ToolMessage.tool_call_id in the persisted
         state) used to key a saved subagent trace — unlike run_id, which is a
@@ -570,7 +581,7 @@ class ChatService:
             msgs = (raw.update or {}).get("messages") or []
             if msgs and hasattr(msgs[0], "tool_call_id"):
                 return msgs[0].tool_call_id
-        return None
+        return getattr(raw, "tool_call_id", None)
 
     @staticmethod
     def _usage_event(chunk) -> dict | None:
@@ -716,8 +727,8 @@ class ChatService:
                     break
                 run_id = event.get("run_id", "")
                 parent_ids = event.get("parent_ids") or []
-                is_task_start = event["event"] == "on_tool_start" and event.get("name") == "task"
-                is_task_end = event["event"] == "on_tool_end" and event.get("name") == "task"
+                is_task_start = event["event"] == "on_tool_start" and _nests(event.get("name"))
+                is_task_end = event["event"] == "on_tool_end" and _nests(event.get("name"))
                 task_run_id = next((subagent_task_root[pid] for pid in parent_ids if pid in subagent_task_root), None)
 
                 if is_task_start:
@@ -758,6 +769,10 @@ class ChatService:
                     results = self._tool_start.handle(event, task_run_id=task_run_id)
                     if task_run_id:
                         nested_events_by_task.setdefault(task_run_id, []).extend(results)
+                    elif is_task_start and is_flow_tool(event.get("name")) and results and results[0].get("label"):
+                        # The flow's name is in no message (its call's arguments are the flow's inputs): kept first in
+                        # its trace, so that a reload labels the badge the same way (conversation_service).
+                        nested_events_by_task.setdefault(run_id, []).append({"type": "flow", "label": results[0]["label"]})
                 elif event["event"] == "on_tool_end":
                     results = self._tool_end.handle(event, task_run_id=task_run_id)
                     if task_run_id:
@@ -767,6 +782,16 @@ class ChatService:
                         tool_call_id = self._task_tool_call_id(event)
                         if trace and tool_call_id:
                             await conversation_client.save_subagent_trace(thread_id, tool_call_id, trace)
+                elif event["event"] == "on_custom_event" and event.get("name") == FLOW_NODE_EVENT and task_run_id:
+                    # A step of a flow the model called, nested under that flow's badge, and kept with its other
+                    # nested events so a reload shows it too.
+                    data = event["data"]
+                    step = {"type": "flow_node", "node": data.get("node"), "node_type": data.get("type"),
+                            "phase": data.get("phase"), "task_run_id": task_run_id}
+                    if "output" in data:
+                        step["output"] = data["output"]
+                    results = [step]
+                    nested_events_by_task.setdefault(task_run_id, []).append(step)
                 elif event["event"] == "on_custom_event" and event.get("name") == TOOL_CALL_LIMIT_EVENT:
                     limit_event = {"type": "tool_limit", **event["data"]}
                     if task_run_id:

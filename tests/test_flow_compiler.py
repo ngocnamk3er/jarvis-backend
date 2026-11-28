@@ -36,7 +36,7 @@ def clean():
 async def test_each_node_gets_what_the_nodes_before_it_produced():
     llm = EchoModel()
     result = await run_flow(parse(news_flow()), {"topic": "Hà Nội"}, CONFIG, llm=llm, tools=TOOLS)
-    assert flow_fakes.tool_calls == [{"tool": "web_search", "query": "Hà Nội news", "label": "Flow step s",
+    assert flow_fakes.tool_calls == [{"tool": "web_search", "query": "Hà Nội news", "label": "Step s · web_search",
                                       "user_id": "u1", "sandbox": False}]
     assert llm.calls[0]["prompt"] == "Summarise: results for Hà Nội news"
     assert result.text == "Summary: [chat-model] Summarise: results for Hà Nội news"

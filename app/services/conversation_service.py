@@ -30,7 +30,8 @@ async def _get_owned_conversation(conversation_id: str, user_id: str):
 def _replay_subagent_trace(trace: list[dict], task_tool_call_id: str) -> list[dict]:
     """Reconstruct tool parts from a saved subagent trace (the raw tool_start/
     tool_end SSE payloads, in original stream order) so they render nested
-    under the `task` badge after reload, same as they did live."""
+    under the `task` badge after reload, same as they did live. A flow's trace
+    is replayed the same way, its steps (flow_node) included."""
     parts: list[dict] = []
     by_run_id: dict[str, dict] = {}
     todos_part: dict | None = None
@@ -72,6 +73,12 @@ def _replay_subagent_trace(trace: list[dict], task_tool_call_id: str) -> list[di
             parts.append({
                 "type": "viz", "format": ev["format"], "code": ev["code"], "title": ev.get("title", ""),
                 "task_run_id": task_tool_call_id,
+            })
+        elif ev["type"] == "flow_node" and ev.get("phase") == "end":
+            # A step of a flow the model called (chat_service's flow_node events); its start adds nothing once done.
+            parts.append({
+                "type": "flow_step", "node": ev.get("node"), "node_type": ev.get("node_type"), "status": "done",
+                "output": ev.get("output"), "task_run_id": task_tool_call_id,
             })
         prev_type = ev["type"]
     return parts
@@ -238,6 +245,9 @@ def serialize_messages(
                 trace = subagent_traces.get(tc["id"])
                 if trace:
                     tool_part["run_id"] = tc["id"]
+                    if not tool_part["label"]:
+                        # a flow's badge: its name was saved with its steps (chat_service)
+                        tool_part["label"] = next((e.get("label") for e in trace if e.get("type") == "flow"), None)
                     pending_parts.extend(_replay_subagent_trace(trace, tc["id"]))
 
     flush()

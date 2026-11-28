@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
+from langchain_core.runnables.config import ensure_config, patch_config
 from langchain_core.tools import BaseTool
 
 from app.core.config import settings
@@ -56,13 +57,20 @@ def _initial(flow: ParsedFlow, inputs: dict) -> dict:
     return {"inputs": coerce_inputs(flow.input_fields, inputs), "outputs": {}}
 
 
+def _with_room(flow: ParsedFlow, config: dict) -> dict:
+    """The config with a recursion limit the flow fits in. LangGraph counts steps, and a chat turn's limit (25 by
+    default) is too low for a long chain of nodes: 30 nodes in a row are 30 steps."""
+    config = ensure_config(config)
+    return patch_config(config, recursion_limit=max(config.get("recursion_limit", 25), len(flow.order) + 10))
+
+
 async def run_flow(flow: ParsedFlow, inputs: dict, config: dict, *, llm=None,
                    tools: dict[str, BaseTool] | None = None) -> FlowResult:
     """Run to the end. Raises FlowInputError, FlowNodeError (naming the node), TimeoutError."""
     initial = _initial(flow, inputs)
     graph = compile_flow(flow, llm=llm, tools=tools)
     async with asyncio.timeout(settings.FLOW_RUN_TIMEOUT_SECONDS):
-        state = await graph.ainvoke(initial, config=config)
+        state = await graph.ainvoke(initial, config=_with_room(flow, config))
     return _result(flow, state)
 
 
@@ -78,7 +86,7 @@ async def stream_flow(flow: ParsedFlow, inputs: dict, config: dict, *, llm=None,
     final = None
     try:
         async with asyncio.timeout(settings.FLOW_RUN_TIMEOUT_SECONDS):
-            async for ev in graph.astream_events(initial, config=config, version="v2"):
+            async for ev in graph.astream_events(initial, config=_with_room(flow, config), version="v2"):
                 kind = ev["event"]
                 if kind == "on_custom_event" and ev["name"] == FLOW_NODE_EVENT:
                     data = dict(ev["data"])

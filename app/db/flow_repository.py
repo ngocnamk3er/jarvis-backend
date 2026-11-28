@@ -92,3 +92,14 @@ async def delete_flow(user_id: str, flow_id: str) -> bool:
             (user_id, flow_id),
         )
         return cur.rowcount > 0
+
+
+async def list_enabled(user_id: str) -> list[dict]:
+    """The user's switched-on flows with their definitions: what their conversations are offered as tools."""
+    async with _pool().connection() as conn:
+        cur = await conn.execute(
+            f"SELECT {_FULL_COLS} FROM {connection.SCHEMA}.user_flows WHERE user_id = %s AND enabled ORDER BY name",
+            (user_id,),
+        )
+        return [dict(zip(_FULL, r, strict=True)) for r in await cur.fetchall()]
+

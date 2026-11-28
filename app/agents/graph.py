@@ -17,6 +17,7 @@ from app.agents.skills import SkillsMiddleware, load_skills
 from app.agents.tool_search import ToolSearchMiddleware
 from app.agents.vision import ViewedImagesMiddleware, VisionNoticeMiddleware
 from app.agents.user_mcp import UserMCPMiddleware, deferred_catalog
+from app.agents.user_flows import UserFlowsMiddleware
 from app.agents.prompt import build_system_prompt
 from app.agents.subagents import RESEARCH_SUBAGENT
 from app.agents.tools import tools
@@ -130,6 +131,8 @@ def build_graph(
     # Outside ToolSearch: the user's own MCP tools must be in the request by the
     # time it decides what to hold back.
     middleware.append(UserMCPMiddleware())
+    # The user's flows, as tools (user_flows.py). Not deferred: they are few, and named by the user to be used.
+    middleware.append(UserFlowsMiddleware())
     middleware.append(ToolSearchMiddleware(deferred, extra_catalog=deferred_catalog))
     # Adds opened images to the request; before the breakdown so it is counted.
     middleware.append(ViewedImagesMiddleware())

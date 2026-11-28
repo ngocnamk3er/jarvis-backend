@@ -141,8 +141,11 @@ def init_client() -> None:
 
 
 async def close_client() -> None:
+    """Close the connections, and only that. The sandboxes stay: a backend that stops (a rollout, a restart, a pod
+    scaled away) must not take the conversations' files with it. They pause on their own when their expiry passes
+    (_touch_expiry), and go when their conversation is deleted (reset). This used to call delete_all(), which deleted
+    the claim, Sandbox and volume of every conversation this process had touched, on every shutdown."""
     if _client is not None:
-        await _client.delete_all()
         await _client.close()
 
 

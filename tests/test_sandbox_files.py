@@ -271,3 +271,25 @@ async def test_sandbox_state_reads_the_cluster_without_touching_it(monkeypatch):
     assert await sm.sandbox_state("t") == "running"
     world["sandboxes"][0]["spec"]["shutdownTime"] = at(-1)                       # paused: its pod is gone
     assert await sm.sandbox_state("t") == "paused"
+
+
+async def test_stopping_the_backend_keeps_every_sandbox(monkeypatch):
+    # A rollout ended with close_client() -> delete_all(), which deleted the sandbox (and its volume) of every
+    # conversation the old pod had used.
+    from app.agents.tools import sandbox_manager as sm
+
+    calls = []
+
+    class Client:
+        async def delete_all(self):
+            calls.append("delete_all")
+
+        async def delete_sandbox(self, *a, **k):
+            calls.append("delete_sandbox")
+
+        async def close(self):
+            calls.append("close")
+
+    monkeypatch.setattr(sm, "_client", Client())
+    await sm.close_client()
+    assert calls == ["close"]
